@@ -10,3 +10,5 @@ python-socketio==5.10.0
 gunicorn==21.2.0
 eventlet==0.33.3
 dhanhq
+redis==5.0.1
+apscheduler==3.10.4

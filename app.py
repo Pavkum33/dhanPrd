@@ -1325,6 +1325,212 @@ def debug_equity_mapping():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# Monthly Levels API Endpoints
+@app.route('/api/levels/calculate', methods=['POST'])
+def calculate_monthly_levels():
+    """Manually trigger monthly level calculation for all symbols"""
+    try:
+        from premarket_job import PremarketJob
+        
+        # Run the calculation in background thread
+        def run_calculation():
+            import asyncio
+            job = PremarketJob()
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(job.calculate_monthly_levels_for_all_symbols())
+            loop.close()
+            return result
+        
+        # Start calculation in thread to avoid blocking
+        calculation_thread = threading.Thread(target=run_calculation, daemon=True)
+        calculation_thread.start()
+        
+        return jsonify({
+            'message': 'Monthly level calculation started',
+            'status': 'running',
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting level calculation: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/levels/<symbol>')
+def get_symbol_levels(symbol):
+    """Get cached monthly levels for a specific symbol"""
+    try:
+        from cache_manager import CacheManager
+        from scanners.monthly_levels import MonthlyLevelCalculator
+        
+        cache = CacheManager()
+        calculator = MonthlyLevelCalculator(cache)
+        
+        # Get current month by default, or from query param
+        month = request.args.get('month', datetime.now().strftime('%Y-%m'))
+        
+        levels = calculator.get_cached_levels(symbol.upper(), month)
+        
+        if levels:
+            return jsonify({
+                'symbol': symbol.upper(),
+                'month': month,
+                'levels': levels,
+                'retrieved_at': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'error': f'No cached levels found for {symbol.upper()} in {month}',
+                'symbol': symbol.upper(),
+                'month': month
+            }), 404
+            
+    except Exception as e:
+        logger.error(f"Error retrieving levels for {symbol}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/levels/narrow-cpr')
+def get_narrow_cpr_symbols():
+    """Get all symbols with narrow CPR for current month"""
+    try:
+        from cache_manager import CacheManager
+        from scanners.monthly_levels import MonthlyLevelCalculator
+        
+        cache = CacheManager()
+        calculator = MonthlyLevelCalculator(cache)
+        
+        # Get month from query param
+        month = request.args.get('month', datetime.now().strftime('%Y-%m'))
+        
+        # Get scan results from cache
+        scan_cache_key = f"scan_results:{month}"
+        scan_results = cache.get(scan_cache_key)
+        
+        if scan_results and 'narrow_cpr' in scan_results:
+            return jsonify({
+                'month': month,
+                'narrow_cpr_symbols': scan_results['narrow_cpr'],
+                'total_symbols': scan_results.get('total_symbols', 0),
+                'count': len(scan_results['narrow_cpr']),
+                'last_updated': scan_results.get('last_updated'),
+                'retrieved_at': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'message': 'No narrow CPR scan results found. Run level calculation first.',
+                'month': month,
+                'narrow_cpr_symbols': [],
+                'count': 0
+            }), 404
+            
+    except Exception as e:
+        logger.error(f"Error retrieving narrow CPR symbols: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/levels/near-pivot', methods=['POST'])
+def get_symbols_near_pivot():
+    """Get symbols currently trading near monthly pivot"""
+    try:
+        from cache_manager import CacheManager
+        from scanners.monthly_levels import MonthlyLevelCalculator
+        
+        # Get current prices from request body
+        data = request.get_json() or {}
+        current_prices = data.get('current_prices', {})
+        symbols = data.get('symbols', list(current_prices.keys()))
+        
+        if not current_prices:
+            return jsonify({'error': 'current_prices required in request body'}), 400
+        
+        cache = CacheManager()
+        calculator = MonthlyLevelCalculator(cache)
+        
+        month = request.args.get('month', datetime.now().strftime('%Y-%m'))
+        
+        # Get symbols near pivot
+        near_pivot_symbols = calculator.get_symbols_near_pivot(symbols, current_prices, month)
+        
+        return jsonify({
+            'month': month,
+            'near_pivot_symbols': near_pivot_symbols,
+            'count': len(near_pivot_symbols),
+            'input_symbols': len(symbols),
+            'retrieved_at': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error checking symbols near pivot: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/levels/premarket-summary')
+def get_premarket_summary():
+    """Get latest pre-market job execution summary"""
+    try:
+        from premarket_job import PremarketJob
+        
+        job = PremarketJob()
+        
+        # Get latest results
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        results = loop.run_until_complete(job.get_latest_results())
+        loop.close()
+        
+        # Add health check
+        health = loop.run_until_complete(job.health_check())
+        results['health'] = health
+        
+        return jsonify(results)
+        
+    except Exception as e:
+        logger.error(f"Error getting premarket summary: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/levels/test', methods=['POST'])
+def test_level_calculation():
+    """Test monthly level calculation with sample data"""
+    try:
+        from cache_manager import CacheManager
+        from scanners.monthly_levels import MonthlyLevelCalculator
+        
+        # Get test data from request
+        data = request.get_json() or {}
+        
+        # Default test data if none provided
+        test_ohlc = data.get('ohlc', {
+            'high': 3125.00,
+            'low': 2875.00,
+            'close': 3050.00,
+            'open': 2890.50
+        })
+        
+        symbol = data.get('symbol', 'TEST_SYMBOL')
+        
+        cache = CacheManager()
+        calculator = MonthlyLevelCalculator(cache)
+        
+        # Calculate levels
+        levels = calculator.calculate_and_cache_symbol_levels(
+            symbol,
+            test_ohlc,
+            'test-month'
+        )
+        
+        return jsonify({
+            'message': 'Test calculation completed',
+            'input_data': {
+                'symbol': symbol,
+                'ohlc': test_ohlc
+            },
+            'calculated_levels': levels,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in test calculation: {e}")
+        return jsonify({'error': str(e)}), 500
+
 def run_scanner_background():
     """Run the scanner in a separate thread"""
     try:

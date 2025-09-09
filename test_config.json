@@ -1,0 +1,8 @@
+{
+  "fetch_days": 75,
+  "lookback_period": 50,
+  "ema_short": 8,
+  "ema_long": 13,
+  "volume_factor": 0.5,
+  "price_threshold": 50
+}

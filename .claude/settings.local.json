@@ -11,7 +11,11 @@
       "WebFetch(domain:dhanscanpoc.up.railway.app)",
       "Bash(python:*)",
       "Bash(docker build:*)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:dhanhq.co)",
+      "Bash(curl:*)",
+      "Bash(pip install:*)"
     ],
     "deny": [],
     "ask": []
