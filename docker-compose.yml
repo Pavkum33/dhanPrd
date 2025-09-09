@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  fno-scanner:
+    build: .
+    image: fno-scanner:latest
+    restart: always
+    environment:
+      - DHAN_CLIENT_ID=${DHAN_CLIENT_ID}
+      - DHAN_ACCESS_TOKEN=${DHAN_ACCESS_TOKEN}
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./instruments_cached.csv:/app/instruments_cached.csv:rw
+      - ./alerts.db:/app/alerts.db
+      - ./logs:/app/logs
+    ports:
+      - "5000:5000"
+    networks:
+      - scanner-network
+
+  # Optional: Use Docker secrets instead of environment variables
+  # secrets:
+  #   - dhan_client_id
+  #   - dhan_access_token
+  #   - telegram_token
+  #   - telegram_chat_id
+
+networks:
+  scanner-network:
+    driver: bridge
+
+# Secrets definition (create files in same directory)
+# secrets:
+#   dhan_client_id:
+#     file: ./secrets/dhan_client_id.txt
+#   dhan_access_token:
+#     file: ./secrets/dhan_access_token.txt
+#   telegram_token:
+#     file: ./secrets/telegram_token.txt
+#   telegram_chat_id:
+#     file: ./secrets/telegram_chat_id.txt

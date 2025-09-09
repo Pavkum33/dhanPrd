@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dhan F&O Scanner Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo-section">
+                    <h1 class="logo">📈 Dhan F&O Scanner</h1>
+                    <span class="version">v1.0.0</span>
+                </div>
+                <div class="status-section">
+                    <div class="status-indicator" id="connectionStatus">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Connecting...</span>
+                    </div>
+                    <div class="market-status" id="marketStatus">
+                        <span class="market-dot"></span>
+                        <span class="market-text">Market Closed</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Dashboard -->
+        <main class="dashboard">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <nav class="nav-menu">
+                    <a href="#" class="nav-item active" data-tab="scanner">
+                        <span class="nav-icon">🔍</span>
+                        <span class="nav-text">Scanner</span>
+                    </a>
+                    <a href="#" class="nav-item" data-tab="alerts">
+                        <span class="nav-icon">🔔</span>
+                        <span class="nav-text">Alerts</span>
+                        <span class="badge" id="alertCount">0</span>
+                    </a>
+                    <a href="#" class="nav-item" data-tab="watchlist">
+                        <span class="nav-icon">⭐</span>
+                        <span class="nav-text">Watchlist</span>
+                    </a>
+                    <a href="#" class="nav-item" data-tab="settings">
+                        <span class="nav-icon">⚙️</span>
+                        <span class="nav-text">Settings</span>
+                    </a>
+                </nav>
+
+                <div class="scanner-stats">
+                    <h3>Statistics</h3>
+                    <div class="stat-item">
+                        <span class="stat-label">Active Symbols</span>
+                        <span class="stat-value" id="activeSymbols">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Total Alerts</span>
+                        <span class="stat-value" id="totalAlerts">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Uptime</span>
+                        <span class="stat-value" id="uptime">00:00:00</span>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content -->
+            <section class="content">
+                <!-- Scanner Tab -->
+                <div class="tab-content active" id="scanner-tab">
+                    <div class="content-header">
+                        <h2>Live Scanner</h2>
+                        <div class="scanner-controls">
+                            <button class="btn btn-primary" id="startScanner">Start Scanner</button>
+                            <button class="btn btn-danger" id="stopScanner" disabled>Stop Scanner</button>
+                            <button class="btn btn-secondary" id="refreshData">Refresh</button>
+                        </div>
+                    </div>
+
+                    <div class="scanner-grid">
+                        <!-- Filter Panel -->
+                        <div class="filter-panel">
+                            <h3>Filters</h3>
+                            <div class="filter-group">
+                                <label>Price Range</label>
+                                <div class="range-inputs">
+                                    <input type="number" id="minPrice" placeholder="Min" class="form-control">
+                                    <span>-</span>
+                                    <input type="number" id="maxPrice" placeholder="Max" class="form-control">
+                                </div>
+                            </div>
+                            <div class="filter-group">
+                                <label>Volume Factor</label>
+                                <input type="range" id="volumeFactor" min="0.1" max="2" step="0.1" value="0.5">
+                                <span class="range-value">0.5x</span>
+                            </div>
+                            <div class="filter-group">
+                                <label>Lookback Period</label>
+                                <select id="lookback" class="form-control">
+                                    <option value="30">30 Days</option>
+                                    <option value="50" selected>50 Days</option>
+                                    <option value="60">60 Days</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-primary btn-block" id="applyFilters">Apply Filters</button>
+                        </div>
+
+                        <!-- Live Data Table -->
+                        <div class="data-panel">
+                            <div class="table-container">
+                                <table class="data-table" id="scannerTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Symbol</th>
+                                            <th>LTP</th>
+                                            <th>Change %</th>
+                                            <th>Volume</th>
+                                            <th>Resistance</th>
+                                            <th>EMA8/13</th>
+                                            <th>Signal</th>
+                                            <th>Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="scannerData">
+                                        <!-- Dynamic content -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alerts Tab -->
+                <div class="tab-content" id="alerts-tab">
+                    <div class="content-header">
+                        <h2>Breakout Alerts</h2>
+                        <div class="alert-controls">
+                            <button class="btn btn-secondary" id="clearAlerts">Clear All</button>
+                            <button class="btn btn-primary" id="exportAlerts">Export CSV</button>
+                        </div>
+                    </div>
+
+                    <div class="alerts-container">
+                        <div class="alert-filters">
+                            <input type="date" id="alertDate" class="form-control">
+                            <select id="alertType" class="form-control">
+                                <option value="all">All Alerts</option>
+                                <option value="breakout">Breakouts</option>
+                                <option value="volume">Volume Spikes</option>
+                            </select>
+                        </div>
+
+                        <div class="alerts-list" id="alertsList">
+                            <!-- Dynamic alerts -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Watchlist Tab -->
+                <div class="tab-content" id="watchlist-tab">
+                    <div class="content-header">
+                        <h2>Watchlist</h2>
+                        <button class="btn btn-primary" id="addToWatchlist">Add Symbol</button>
+                    </div>
+
+                    <div class="watchlist-grid" id="watchlistGrid">
+                        <!-- Dynamic watchlist cards -->
+                    </div>
+                </div>
+
+                <!-- Settings Tab -->
+                <div class="tab-content" id="settings-tab">
+                    <div class="content-header">
+                        <h2>Settings</h2>
+                    </div>
+
+                    <div class="settings-container">
+                        <div class="settings-section">
+                            <h3>Scanner Configuration</h3>
+                            <div class="settings-group">
+                                <label>Batch Size</label>
+                                <input type="number" id="batchSize" value="200" class="form-control">
+                            </div>
+                            <div class="settings-group">
+                                <label>Historical Days</label>
+                                <input type="number" id="histDays" value="60" class="form-control">
+                            </div>
+                            <div class="settings-group">
+                                <label>EMA Short Period</label>
+                                <input type="number" id="emaShort" value="8" class="form-control">
+                            </div>
+                            <div class="settings-group">
+                                <label>EMA Long Period</label>
+                                <input type="number" id="emaLong" value="13" class="form-control">
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3>Notifications</h3>
+                            <div class="settings-group">
+                                <label class="switch">
+                                    <input type="checkbox" id="enableNotifications">
+                                    <span class="slider"></span>
+                                </label>
+                                <span>Browser Notifications</span>
+                            </div>
+                            <div class="settings-group">
+                                <label class="switch">
+                                    <input type="checkbox" id="enableSound">
+                                    <span class="slider"></span>
+                                </label>
+                                <span>Sound Alerts</span>
+                            </div>
+                        </div>
+
+                        <button class="btn btn-primary" id="saveSettings">Save Settings</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Panel - Live Chart -->
+            <aside class="right-panel">
+                <div class="chart-container">
+                    <h3>Live Breakouts</h3>
+                    <canvas id="breakoutChart"></canvas>
+                </div>
+
+                <div class="recent-alerts">
+                    <h3>Recent Alerts</h3>
+                    <div class="alert-feed" id="alertFeed">
+                        <!-- Live alert feed -->
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <div class="modal" id="symbolModal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2 id="modalSymbol">Symbol Details</h2>
+            <div class="modal-body" id="modalBody">
+                <!-- Dynamic content -->
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

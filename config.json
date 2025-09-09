@@ -1,0 +1,16 @@
+{
+  "hist_days": 60,
+  "lookback": 50,
+  "ema_short": 8,
+  "ema_long": 13,
+  "volume_factor": 0.5,
+  "price_threshold": 50,
+  "batch_size": 200,
+  "fetch_concurrency": 6,
+  "instrument_csv_url": "https://images.dhan.co/api-data/api-scrip-master-detailed.csv",
+  "local_instrument_cache": "instruments_cached.csv",
+  "sqlite_file": "alerts.db",
+  "tele_throttle_sec": 0.6,
+  "request_code": 15,
+  "ws_base": "wss://api-feed.dhan.co"
+}
