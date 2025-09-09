@@ -14,6 +14,7 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import threading
 import time
+from historical_fetcher import fetch_and_analyze_historical_data
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24)
@@ -27,7 +28,9 @@ scanner_state = {
     'active_symbols': 0,
     'last_update': None,
     'alerts': [],
-    'scanner_data': []
+    'scanner_data': [],
+    'historical_data': {},
+    'historical_analysis_running': False
 }
 
 # Database connection
@@ -276,6 +279,94 @@ def scanner_update():
         socketio.emit('stats', stats)
     
     return jsonify({'success': True})
+
+@app.route('/api/historical/fetch', methods=['POST'])
+def fetch_historical():
+    """Fetch historical data for analysis"""
+    if scanner_state['historical_analysis_running']:
+        return jsonify({'error': 'Historical analysis already running'}), 400
+    
+    def run_historical_fetch():
+        scanner_state['historical_analysis_running'] = True
+        try:
+            # Run async function in thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            historical_data = loop.run_until_complete(fetch_and_analyze_historical_data())
+            
+            # Update scanner state
+            scanner_state['historical_data'] = historical_data
+            scanner_state['active_symbols'] = len(historical_data)
+            
+            # Convert to scanner data format
+            scanner_data = []
+            for sec_id, data in historical_data.items():
+                analysis = data['current_analysis']
+                scanner_data.append({
+                    'symbol': analysis['symbol'],
+                    'ltp': analysis['close'],
+                    'change': analysis['change_pct'],
+                    'volume': analysis['volume'],
+                    'resistance': analysis['resistance'],
+                    'ema8': analysis['ema_short'],
+                    'ema13': analysis['ema_long'],
+                    'signal': 'BREAKOUT' if analysis['breakout_signal'] else None
+                })
+            
+            scanner_state['scanner_data'] = scanner_data
+            scanner_state['last_update'] = datetime.now().isoformat()
+            
+            # Emit updates to all clients
+            socketio.emit('scanner_data', scanner_data)
+            socketio.emit('stats', {
+                'activeSymbols': len(historical_data),
+                'totalAlerts': len(scanner_state['alerts'])
+            })
+            
+            # Generate alerts for breakout signals
+            for data in historical_data.values():
+                analysis = data['current_analysis']
+                if analysis['breakout_signal']:
+                    alert = {
+                        'symbol': analysis['symbol'],
+                        'message': f"Historical Breakout - Close: {analysis['close']:.2f}, Resistance: {analysis['resistance']:.2f}",
+                        'timestamp': datetime.now().isoformat(),
+                        'type': 'breakout'
+                    }
+                    scanner_state['alerts'].append(alert)
+                    socketio.emit('alert', alert)
+            
+            loop.close()
+            
+        except Exception as e:
+            print(f"Historical fetch error: {e}")
+        finally:
+            scanner_state['historical_analysis_running'] = False
+    
+    # Start in background thread
+    thread = threading.Thread(target=run_historical_fetch, daemon=True)
+    thread.start()
+    
+    return jsonify({'message': 'Historical data fetch started'})
+
+@app.route('/api/historical/status')
+def historical_status():
+    """Get historical data fetch status"""
+    return jsonify({
+        'running': scanner_state['historical_analysis_running'],
+        'symbols_count': len(scanner_state['historical_data']),
+        'last_update': scanner_state['last_update']
+    })
+
+@app.route('/api/historical/data')
+def get_historical_data():
+    """Get current historical data"""
+    return jsonify({
+        'data': scanner_state['scanner_data'],
+        'symbols_count': len(scanner_state['historical_data']),
+        'last_update': scanner_state['last_update']
+    })
 
 def run_scanner_background():
     """Run the scanner in a separate thread"""

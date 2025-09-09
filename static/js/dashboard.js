@@ -69,6 +69,7 @@ class DhanScanner {
         document.getElementById('startScanner').addEventListener('click', () => this.startScanner());
         document.getElementById('stopScanner').addEventListener('click', () => this.stopScanner());
         document.getElementById('refreshData').addEventListener('click', () => this.refreshData());
+        document.getElementById('fetchHistorical').addEventListener('click', () => this.fetchHistoricalData());
 
         // Filters
         document.getElementById('applyFilters').addEventListener('click', () => this.applyFilters());
@@ -128,6 +129,65 @@ class DhanScanner {
 
     refreshData() {
         this.socket.emit('refresh_data');
+    }
+
+    async fetchHistoricalData() {
+        const btn = document.getElementById('fetchHistorical');
+        const originalText = btn.textContent;
+        
+        try {
+            btn.disabled = true;
+            btn.textContent = 'Fetching...';
+            
+            const response = await fetch('/api/historical/fetch', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            const result = await response.json();
+            
+            if (response.ok) {
+                this.showNotification('Historical Fetch Started', 'Fetching historical data for F&O analysis...');
+                
+                // Poll for status
+                this.pollHistoricalStatus();
+            } else {
+                this.showNotification('Error', result.error || 'Failed to start historical fetch');
+            }
+        } catch (error) {
+            console.error('Historical fetch error:', error);
+            this.showNotification('Error', 'Network error occurred');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    }
+
+    async pollHistoricalStatus() {
+        const pollStatus = async () => {
+            try {
+                const response = await fetch('/api/historical/status');
+                const status = await response.json();
+                
+                if (status.running) {
+                    document.getElementById('fetchHistorical').textContent = 
+                        `Fetching... (${status.symbols_count} processed)`;
+                    setTimeout(pollStatus, 2000); // Poll every 2 seconds
+                } else {
+                    document.getElementById('fetchHistorical').textContent = 'Fetch Historical';
+                    if (status.symbols_count > 0) {
+                        this.showNotification('Historical Analysis Complete', 
+                            `Analyzed ${status.symbols_count} F&O securities`);
+                    }
+                }
+            } catch (error) {
+                console.error('Status poll error:', error);
+            }
+        };
+        
+        pollStatus();
     }
 
     applyFilters() {

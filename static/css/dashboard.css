@@ -373,6 +373,15 @@ body {
     background: #ff1744;
 }
 
+.btn-success {
+    background: var(--accent-success);
+    color: var(--bg-primary);
+}
+
+.btn-success:hover {
+    background: #00cc77;
+}
+
 .btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
