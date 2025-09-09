@@ -145,8 +145,11 @@ class InstrumentLoader:
                 if c in cols:
                     return c
             return None
-        self.colmap['sid'] = find('securityId','SEM_SMST_SECURITY_ID','SECURITYID','SECURITY_ID','SCRIP_CODE')
-        self.colmap['symbol'] = find('tradingSymbol','SEM_SMST_SECURITY_SYMBOL','symbolName','InstrumentName','SYMBOL')
+        # Add more column name variations for the detailed CSV
+        self.colmap['sid'] = find('SEM_SMST_SECURITY_ID','securityId','SECURITYID','SECURITY_ID','SCRIP_CODE',
+                                  'SecurityId','SM_KEY_SYMBOL','SCRIP_CD','SEM_INSTRUMENT_NAME')
+        self.colmap['symbol'] = find('SEM_TRADING_SYMBOL','tradingSymbol','SEM_SMST_SECURITY_SYMBOL','symbolName',
+                                    'InstrumentName','SYMBOL','TradingSymbol','SYMBOL_NAME','SEM_CUSTOM_SYMBOL')
         self.colmap['segment'] = find('segment','SEM_SEGMENT','EXCHANGE','SEM_EXM_EXCH_ID')
         self.colmap['expiry'] = find('EXPIRY_DATE','EXPIRY')
         self.colmap['lot'] = find('LOT_SIZE','lotSize','SEM_LOT_UNITS')
@@ -173,10 +176,17 @@ class InstrumentLoader:
         sidc = self.colmap.get('sid')
         symc = self.colmap.get('symbol')
         if sidc is None or symc is None:
-            raise RuntimeError("Instrument master missing sid/symbol columns")
+            logger.error(f"Instrument master missing sid/symbol columns. Available columns: {list(df.columns[:20])}")
+            logger.error(f"Column mapping: {self.colmap}")
+            # Return empty map instead of crashing
+            return {}
         out = {}
         for _, r in df.iterrows():
-            out[str(r[sidc])] = str(r[symc])
+            try:
+                out[str(r[sidc])] = str(r[symc])
+            except Exception as e:
+                logger.debug(f"Error mapping row: {e}")
+                continue
         return out
 
 # ---------- SQLite Alert DB ----------
