@@ -1,0 +1,29 @@
+{
+  "symbols": [
+    { "underlying": "RELIANCE" },
+    { "underlying": "HDFCBANK" },
+    { "underlying": "INFY" },
+    { "underlying": "TCS" },
+    { "underlying": "ICICIBANK" },
+    { "underlying": "AXISBANK" },
+    { "underlying": "KOTAKBANK" },
+    { "underlying": "LT" },
+    { "underlying": "SBIN" },
+    { "underlying": "ITC" },
+    { "underlying": "NIFTY 50" },
+    { "underlying": "BANKNIFTY" },
+    { "underlying": "FINNIFTY" }
+  ],
+  "timeframes": [
+    "1d",
+    "15m", 
+    "5m"
+  ],
+  "analysis": {
+    "lookback_period": 50,
+    "ema_short": 8,
+    "ema_long": 13,
+    "volume_factor": 0.5,
+    "price_threshold": 50
+  }
+}
