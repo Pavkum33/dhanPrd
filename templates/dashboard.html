@@ -103,12 +103,22 @@
                                 <span class="range-value">0.5x</span>
                             </div>
                             <div class="filter-group">
-                                <label>Lookback Period</label>
+                                <label>Lookback Period (Analysis)</label>
                                 <select id="lookback" class="form-control">
                                     <option value="30">30 Days</option>
                                     <option value="50" selected>50 Days</option>
                                     <option value="60">60 Days</option>
                                 </select>
+                            </div>
+                            <div class="filter-group">
+                                <label>Fetch Days (Data)</label>
+                                <select id="fetchDays" class="form-control">
+                                    <option value="60">60 Days</option>
+                                    <option value="75" selected>75 Days</option>
+                                    <option value="90">90 Days</option>
+                                    <option value="120">120 Days</option>
+                                </select>
+                                <small class="help-text">More data = higher accuracy, slower processing</small>
                             </div>
                             <button class="btn btn-primary btn-block" id="applyFilters">Apply Filters</button>
                             

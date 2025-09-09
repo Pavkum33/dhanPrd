@@ -272,6 +272,13 @@ body {
     outline: none;
     border-color: var(--accent-primary);
 }
+.help-text {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    opacity: 0.8;
+}
 
 .range-inputs {
     display: flex;

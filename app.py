@@ -280,7 +280,7 @@ class DhanHistoricalFetcher:
         else:
             return "NSE_EQ", "EQUITY"
 
-    async def get_historical_data_for_underlying(self, underlying_symbol: str, security_id: int, days: int = 60, interval: str = "1d") -> pd.DataFrame:
+    async def get_historical_data_for_underlying(self, underlying_symbol: str, security_id: int, days: int = 75, interval: str = "1d") -> pd.DataFrame:
         """Fetch historical data using dhanhq SDK (preferred) or REST API fallback
         
         The /v2/chart/history REST endpoint returns 404, so we use SDK when available
@@ -617,7 +617,7 @@ class BreakoutAnalyzer:
         
         return analysis
 
-async def fetch_and_analyze_historical_data():
+async def fetch_and_analyze_historical_data(fetch_days: int = 75, lookback_period: int = 50, ema_short: int = 8, ema_long: int = 13, volume_factor: float = 0.5, price_threshold: float = 50):
     """Main function to fetch and analyze historical data with progress updates"""
     client_id = os.getenv('DHAN_CLIENT_ID')
     access_token = os.getenv('DHAN_ACCESS_TOKEN')
@@ -640,7 +640,7 @@ async def fetch_and_analyze_historical_data():
             emit_progress('error', 'Dhan credentials not found in environment variables')
             return {}
         
-        emit_progress('starting', 'Starting historical data fetch...')
+        emit_progress('starting', f'Starting historical data fetch... (Fetch: {fetch_days} days, Analysis: {lookback_period} days)')
         
         async with DhanHistoricalFetcher(client_id, access_token) as fetcher:
             emit_progress('instruments', 'Fetching instrument master from Dhan...')
@@ -701,12 +701,7 @@ async def fetch_and_analyze_historical_data():
             # Fetch historical data with rate limiting and deduplication
             analyzed_data = {}
             processed_underlyings = set()  # Track processed underlying symbols to avoid duplicates
-            # Configuration parameters for Chartink-style analysis
-            lookback_period = 50
-            ema_short = 8
-            ema_long = 13
-            volume_factor = 0.5
-            price_threshold = 50
+            # Use passed configuration parameters
             
             analyzer = BreakoutAnalyzer(lookback=lookback_period, ema_short=ema_short, ema_long=ema_long)
             successful_fetches = 0
@@ -752,7 +747,7 @@ async def fetch_and_analyze_historical_data():
                     else:
                         await asyncio.sleep(0.5)  # Standard rate limiting
                     # Fetch underlying equity data using numeric securityId (the correct approach!)
-                    df = await fetcher.get_historical_data_for_underlying(underlying_symbol, security_id)
+                    df = await fetcher.get_historical_data_for_underlying(underlying_symbol, security_id, days=fetch_days)
                     
                     if not df.empty:
                         emit_progress('analyzing', f'Analyzing {underlying_symbol} ({len(df)} days of data)...', i + 1, total_securities)
@@ -1103,14 +1098,30 @@ def fetch_historical():
     if scanner_state['historical_analysis_running']:
         return jsonify({'error': 'Historical analysis already running'}), 400
     
+    # Get configuration parameters from request
+    config = request.json or {}
+    fetch_days = config.get('fetch_days', 75)
+    lookback_period = config.get('lookback_period', 50)
+    ema_short = config.get('ema_short', 8)
+    ema_long = config.get('ema_long', 13)
+    volume_factor = config.get('volume_factor', 0.5)
+    price_threshold = config.get('price_threshold', 50)
+    
     def run_historical_fetch():
         scanner_state['historical_analysis_running'] = True
         try:
-            # Run async function in thread
+            # Run async function in thread with configuration
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-            historical_data = loop.run_until_complete(fetch_and_analyze_historical_data())
+            historical_data = loop.run_until_complete(fetch_and_analyze_historical_data(
+                fetch_days=fetch_days,
+                lookback_period=lookback_period, 
+                ema_short=ema_short,
+                ema_long=ema_long,
+                volume_factor=volume_factor,
+                price_threshold=price_threshold
+            ))
             
             # Update scanner state
             scanner_state['historical_data'] = historical_data
@@ -1165,7 +1176,17 @@ def fetch_historical():
     thread = threading.Thread(target=run_historical_fetch, daemon=True)
     thread.start()
     
-    return jsonify({'message': 'Historical data fetch started'})
+    return jsonify({
+        'message': 'Historical data fetch started',
+        'config': {
+            'fetch_days': fetch_days,
+            'lookback_period': lookback_period,
+            'ema_short': ema_short,
+            'ema_long': ema_long,
+            'volume_factor': volume_factor,
+            'price_threshold': price_threshold
+        }
+    })
 
 @app.route('/api/historical/status')
 def historical_status():
@@ -1183,6 +1204,26 @@ def get_historical_data():
         'data': scanner_state['scanner_data'],
         'symbols_count': len(scanner_state['historical_data']),
         'last_update': scanner_state['last_update']
+    })
+
+@app.route('/api/analysis/config', methods=['GET'])
+def get_analysis_config():
+    """Get current analysis configuration defaults"""
+    return jsonify({
+        'fetch_days': 75,
+        'lookback_period': 50,
+        'ema_short': 8,
+        'ema_long': 13,
+        'volume_factor': 0.5,
+        'price_threshold': 50,
+        'description': {
+            'fetch_days': 'Calendar days of data to fetch from API',
+            'lookback_period': 'Days used for resistance calculation', 
+            'ema_short': 'Short EMA period for crossover',
+            'ema_long': 'Long EMA period for crossover',
+            'volume_factor': 'Minimum volume multiplier vs previous day',
+            'price_threshold': 'Minimum stock price filter'
+        }
     })
 
 @app.route('/api/cache/status')

@@ -148,11 +148,20 @@ class DhanScanner {
             progressPanel.style.display = 'block';
             this.resetProgress();
             
+            // Get configuration from UI controls
+            const config = {
+                fetch_days: parseInt(document.getElementById('fetchDays').value),
+                lookback_period: parseInt(document.getElementById('lookback').value),
+                volume_factor: parseFloat(document.getElementById('volumeFactor').value),
+                price_threshold: parseInt(document.getElementById('minPrice').value) || 50
+            };
+            
             const response = await fetch('/api/historical/fetch', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
-                }
+                },
+                body: JSON.stringify(config)
             });
             
             const result = await response.json();
