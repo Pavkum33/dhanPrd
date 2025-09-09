@@ -13,7 +13,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from cache_manager import CacheManager
 from scanners.monthly_levels import MonthlyLevelCalculator
-from app import DhanHistoricalFetcher
+from dhan_fetcher import DhanHistoricalFetcher
 
 # Setup logging
 logging.basicConfig(

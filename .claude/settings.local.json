@@ -15,7 +15,15 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:dhanhq.co)",
       "Bash(curl:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(taskkill:*)",
+      "Bash(set DHAN_CLIENT_ID=your_id)",
+      "Bash(set DHAN_ACCESS_TOKEN=your_token)",
+      "Bash(set PORT=5001)",
+      "Bash(set DHAN_CLIENT_ID=1106283829)",
+      "Bash(set:*)",
+      "Bash(set PORT=5050)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []

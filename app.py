@@ -42,6 +42,25 @@ except ImportError:
     HAS_DHAN_SDK = False
     logger.warning("dhanhq SDK not available - using REST API fallback")
 
+# Import multi-scan modules at startup to avoid route registration issues
+try:
+    from cache_manager import CacheManager
+    from scanners.monthly_levels import MonthlyLevelCalculator
+    from premarket_job import PremarketJob
+    from dhan_fetcher import DhanHistoricalFetcher as DhanFetcher
+    MULTI_SCAN_AVAILABLE = True
+    logger.info("Multi-scan modules loaded successfully")
+    
+    # Initialize global instances
+    cache_manager = CacheManager()
+    level_calculator = MonthlyLevelCalculator(cache_manager)
+    
+except ImportError as e:
+    MULTI_SCAN_AVAILABLE = False
+    logger.warning(f"Multi-scan modules not available: {e}")
+    cache_manager = None
+    level_calculator = None
+
 # Historical Data Fetcher Classes
 class DhanHistoricalFetcher:
     """Fetches historical data using dhanhq SDK (preferred) or REST API (fallback)"""
@@ -1238,9 +1257,23 @@ def get_analysis_config():
 
 @app.route('/api/cache/status')
 def cache_status():
-    """Check cache file status"""
+    """Check cache system status"""
     try:
+        if not MULTI_SCAN_AVAILABLE or not cache_manager:
+            return jsonify({
+                'error': 'Multi-scan modules not available',
+                'message': 'Cache manager not loaded',
+                'cache_available': False
+            }), 500
+            
+        # Get cache system status
+        stats = cache_manager.get_cache_stats()
+        health = cache_manager.health_check()
+        
+        # Also check historical data cache file
         cache_file = 'cache/historical_data.pkl'
+        file_status = {'cache_exists': False}
+        
         if os.path.exists(cache_file):
             cache_age = time.time() - os.path.getmtime(cache_file)
             cache_hours = cache_age / 3600
@@ -1259,7 +1292,7 @@ def cache_status():
                 timestamp = 'Unknown'
                 breakouts = 0
             
-            return jsonify({
+            file_status = {
                 'cache_exists': True,
                 'age_hours': round(cache_hours, 1),
                 'file_size_mb': round(file_size / (1024*1024), 2),
@@ -1268,13 +1301,20 @@ def cache_status():
                 'breakouts_cached': breakouts,
                 'is_fresh': cache_hours < 24,
                 'status': 'fresh' if cache_hours < 24 else 'expired'
-            })
-        else:
-            return jsonify({
-                'cache_exists': False,
-                'status': 'no_cache'
-            })
+            }
+        
+        return jsonify({
+            'cache_system': {
+                'available': True,
+                'stats': stats,
+                'health': health
+            },
+            'historical_file_cache': file_status,
+            'timestamp': datetime.now().isoformat()
+        })
+        
     except Exception as e:
+        logger.error(f"Error getting cache status: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/debug/instruments')
@@ -1340,7 +1380,21 @@ def debug_equity_mapping():
 def calculate_monthly_levels():
     """Manually trigger monthly level calculation for all symbols"""
     try:
-        from premarket_job import PremarketJob
+        if not MULTI_SCAN_AVAILABLE:
+            return jsonify({
+                'error': 'Multi-scan modules not available',
+                'message': 'Cache manager or monthly levels calculator not loaded'
+            }), 500
+            
+        # Check for credentials
+        client_id = os.getenv('DHAN_CLIENT_ID')
+        access_token = os.getenv('DHAN_ACCESS_TOKEN')
+        
+        if not client_id or not access_token:
+            return jsonify({
+                'error': 'DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN environment variables required',
+                'message': 'Set real Dhan credentials to calculate levels with live data'
+            }), 400
         
         # Run the calculation in background thread
         def run_calculation():
@@ -1357,7 +1411,7 @@ def calculate_monthly_levels():
         calculation_thread.start()
         
         return jsonify({
-            'message': 'Monthly level calculation started',
+            'message': 'Monthly level calculation started with real Dhan data',
             'status': 'running',
             'timestamp': datetime.now().isoformat()
         })
@@ -1370,16 +1424,16 @@ def calculate_monthly_levels():
 def get_symbol_levels(symbol):
     """Get cached monthly levels for a specific symbol"""
     try:
-        from cache_manager import CacheManager
-        from scanners.monthly_levels import MonthlyLevelCalculator
-        
-        cache = CacheManager()
-        calculator = MonthlyLevelCalculator(cache)
+        if not MULTI_SCAN_AVAILABLE or not level_calculator:
+            return jsonify({
+                'error': 'Multi-scan modules not available',
+                'message': 'Cache manager or monthly levels calculator not loaded'
+            }), 500
         
         # Get current month by default, or from query param
         month = request.args.get('month', datetime.now().strftime('%Y-%m'))
         
-        levels = calculator.get_cached_levels(symbol.upper(), month)
+        levels = level_calculator.get_cached_levels(symbol.upper(), month)
         
         if levels:
             return jsonify({
@@ -1391,6 +1445,7 @@ def get_symbol_levels(symbol):
         else:
             return jsonify({
                 'error': f'No cached levels found for {symbol.upper()} in {month}',
+                'message': 'Run level calculation first to populate cache with real data',
                 'symbol': symbol.upper(),
                 'month': month
             }), 404
@@ -1403,18 +1458,18 @@ def get_symbol_levels(symbol):
 def get_narrow_cpr_symbols():
     """Get all symbols with narrow CPR for current month"""
     try:
-        from cache_manager import CacheManager
-        from scanners.monthly_levels import MonthlyLevelCalculator
-        
-        cache = CacheManager()
-        calculator = MonthlyLevelCalculator(cache)
+        if not MULTI_SCAN_AVAILABLE or not cache_manager:
+            return jsonify({
+                'error': 'Multi-scan modules not available',
+                'message': 'Cache manager or monthly levels calculator not loaded'
+            }), 500
         
         # Get month from query param
         month = request.args.get('month', datetime.now().strftime('%Y-%m'))
         
         # Get scan results from cache
         scan_cache_key = f"scan_results:{month}"
-        scan_results = cache.get(scan_cache_key)
+        scan_results = cache_manager.get(scan_cache_key)
         
         if scan_results and 'narrow_cpr' in scan_results:
             results = scan_results['narrow_cpr']
@@ -1437,10 +1492,11 @@ def get_narrow_cpr_symbols():
             })
         else:
             return jsonify({
-                'message': 'No narrow CPR scan results found. Run level calculation first.',
+                'message': 'No narrow CPR scan results found. Run level calculation with real Dhan credentials first.',
                 'month': month,
                 'narrow_cpr_symbols': [],
-                'count': 0
+                'count': 0,
+                'help': 'Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN environment variables and call POST /api/levels/calculate'
             }), 404
             
     except Exception as e:
