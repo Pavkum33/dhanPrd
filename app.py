@@ -187,43 +187,57 @@ class DhanHistoricalFetcher:
         
         return active_futures
     
-    async def get_historical_data_for_underlying(self, underlying_symbol: str, days: int = 60) -> pd.DataFrame:
-        """Fetch historical daily data for underlying equity/index (not the future contract)
+    async def load_equity_instruments(self) -> dict:
+        """Load NSE equity instrument master and create symbol → securityId mapping"""
+        url = f"{self.base_url}/v2/instruments/master"
         
-        This is the correct approach since Dhan's API doesn't provide historical data for future contracts.
-        We analyze the underlying equity movement to predict future contract behavior.
+        try:
+            async with self.session.get(url) as response:
+                if response.status == 200:
+                    instruments = await response.json()
+                    
+                    # Create symbol → securityId mapping for NSE equities
+                    equity_mapping = {}
+                    for inst in instruments:
+                        if (inst.get("exchangeSegment") == "NSE_EQ" and 
+                            inst.get("instrumentType") in ["EQUITY", "INDEX"]):
+                            symbol = inst.get("symbol")
+                            security_id = inst.get("securityId")
+                            if symbol and security_id:
+                                equity_mapping[symbol] = security_id
+                    
+                    logger.info(f"Loaded {len(equity_mapping)} NSE equity/index instruments")
+                    return equity_mapping
+                else:
+                    logger.error(f"Failed to fetch instrument master: {response.status}")
+                    return {}
+        except Exception as e:
+            logger.exception(f"Error loading instrument master: {e}")
+            return {}
+
+    async def get_historical_data_for_underlying(self, underlying_symbol: str, security_id: int, days: int = 60, interval: str = "1d") -> pd.DataFrame:
+        """Fetch historical data using numeric securityId (the correct approach for Dhan API)
+        
+        This resolves "No historical data" by using exact securityId from instrument master
+        instead of symbol names which the API doesn't recognize.
         """
         to_date = datetime.now().date()
         from_date = to_date - timedelta(days=days + 5)
         
-        logger.info(f"Fetching underlying historical data: symbol={underlying_symbol}, exchangeSegment=NSE_EQ")
+        logger.info(f"Fetching historical data: securityId={security_id}, symbol={underlying_symbol}, interval={interval}")
         
-        # Method 1: REST API for underlying equity
+        # REST API with numeric securityId (the key fix!)
         url = f"{self.base_url}/charts/historical"
         
-        # Determine if it's an index or equity
-        is_index = any(idx in underlying_symbol.upper() for idx in ['NIFTY', 'SENSEX', 'BANKEX'])
-        
-        if is_index:
-            # For indices like NIFTY, BANKNIFTY
-            payload = {
-                "symbol": underlying_symbol,
-                "exchangeSegment": "NSE_EQ",  # Use equity segment for indices too
-                "instrumentType": "INDEX",    # Index instrument type
-                "fromDate": from_date.strftime("%Y-%m-%d"),
-                "toDate": to_date.strftime("%Y-%m-%d"),
-                "interval": "1d"
-            }
-        else:
-            # For individual stocks like ADANIPORTS, RELIANCE
-            payload = {
-                "symbol": underlying_symbol,
-                "exchangeSegment": "NSE_EQ",  # NSE Equity
-                "instrumentType": "EQUITY",   # Equity instrument type  
-                "fromDate": from_date.strftime("%Y-%m-%d"),
-                "toDate": to_date.strftime("%Y-%m-%d"),
-                "interval": "1d"
-            }
+        # Use numeric securityId - this is what Dhan API requires
+        payload = {
+            "securityId": str(security_id),  # Numeric security ID from instrument master
+            "exchangeSegment": "NSE_EQ",     # NSE Equity segment
+            "instrumentType": "EQUITY",      # Will work for both equity and index
+            "fromDate": from_date.strftime("%Y-%m-%d"),
+            "toDate": to_date.strftime("%Y-%m-%d"),
+            "interval": interval             # Support multiple timeframes (1d, 15m, 5m, etc)
+        }
         
         try:
             async with self.session.post(url, json=payload) as response:
@@ -245,7 +259,7 @@ class DhanHistoricalFetcher:
                                 df[col] = 0
                         
                         df = df.sort_values('date').reset_index(drop=True)
-                        logger.info(f"✅ {underlying_symbol}: Fetched {len(df)} historical records")
+                        logger.info(f"✅ {underlying_symbol}: Fetched {len(df)} historical records using securityId={security_id}")
                         return df[['date', 'open', 'high', 'low', 'close', 'volume']]
                 else:
                     logger.warning(f"❌ {underlying_symbol}: API error {response.status}")
@@ -439,6 +453,16 @@ async def fetch_and_analyze_historical_data():
             total_securities = len(securities)
             emit_progress('prepared', f'Prepared {total_securities} F&O securities for analysis', 0, total_securities)
             
+            # Load NSE equity instruments for securityId resolution
+            emit_progress('loading_instruments', 'Loading NSE equity instrument master...', 0, total_securities)
+            equity_mapping = await fetcher.load_equity_instruments()
+            
+            if not equity_mapping:
+                emit_progress('error', 'Failed to load equity instruments - cannot resolve securityIds')
+                return {}
+            
+            emit_progress('instruments_loaded', f'Loaded {len(equity_mapping)} equity instruments for securityId mapping', 0, total_securities)
+            
             # Fetch historical data with rate limiting
             analyzed_data = {}
             # Configuration parameters for Chartink-style analysis
@@ -457,15 +481,27 @@ async def fetch_and_analyze_historical_data():
                     future_symbol = sec_info['symbol']  # e.g., ADANIPORTS-Sep2025-FUT
                     underlying_symbol = fetcher.extract_underlying_symbol(future_symbol)  # e.g., ADANIPORTS
                     
-                    emit_progress('fetching', f'Fetching historical data for {underlying_symbol}...', i + 1, total_securities, {
+                    # Resolve securityId from equity mapping (THE KEY FIX!)
+                    security_id = equity_mapping.get(underlying_symbol)
+                    if not security_id:
+                        failed_fetches += 1
+                        emit_progress('failed_symbol', f'❌ {underlying_symbol}: securityId not found in equity master', 
+                                    i + 1, total_securities, {
+                            'symbol': underlying_symbol,
+                            'successful': successful_fetches,
+                            'failed': failed_fetches
+                        })
+                        continue
+                    
+                    emit_progress('fetching', f'Fetching historical data for {underlying_symbol} (securityId: {security_id})...', i + 1, total_securities, {
                         'current_symbol': underlying_symbol,
                         'successful': successful_fetches,
                         'failed': failed_fetches
                     })
                     
                     await asyncio.sleep(0.3)  # Rate limiting
-                    # Fetch underlying equity data instead of future contract data
-                    df = await fetcher.get_historical_data_for_underlying(underlying_symbol)
+                    # Fetch underlying equity data using numeric securityId (the correct approach!)
+                    df = await fetcher.get_historical_data_for_underlying(underlying_symbol, security_id)
                     
                     if not df.empty:
                         emit_progress('analyzing', f'Analyzing {underlying_symbol} ({len(df)} days of data)...', i + 1, total_securities)
