@@ -5,6 +5,7 @@ Provides real-time web interface for monitoring scanner activity
 """
 
 import os
+import sys
 import json
 import sqlite3
 import asyncio
