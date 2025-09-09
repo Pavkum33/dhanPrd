@@ -330,7 +330,7 @@ class DhanHistoricalFetcher:
                         "from_date": from_date.strftime("%Y-%m-%d"),
                         "to_date": to_date.strftime("%Y-%m-%d")
                     },
-                    # Attempt 3: String exchange_segment
+                    # Attempt 3: String exchange_segment (this works for equities)
                     {
                         "security_id": str(security_id),
                         "exchange_segment": "NSE_INDEX" if is_index else "NSE_EQ",
@@ -340,11 +340,39 @@ class DhanHistoricalFetcher:
                     }
                 ]
                 
+                # For indices, add symbol-based attempt
+                if is_index:
+                    param_attempts.append({
+                        "symbol": underlying_symbol,
+                        "exchange_segment": "NSE_INDEX",
+                        "instrument_type": instrument_type,
+                        "from_date": from_date.strftime("%Y-%m-%d"),
+                        "to_date": to_date.strftime("%Y-%m-%d")
+                    })
+                    # Also try common index symbol variations
+                    index_variations = {
+                        "NIFTY": ["NIFTY 50", "NIFTY50"],
+                        "BANKNIFTY": ["BANK NIFTY", "BANKNIFTY"],
+                        "FINNIFTY": ["FIN NIFTY", "FINNIFTY"]
+                    }
+                    
+                    variations = index_variations.get(underlying_symbol, [])
+                    for variation in variations:
+                        param_attempts.append({
+                            "symbol": variation,
+                            "exchange_segment": "NSE_INDEX",
+                            "instrument_type": instrument_type,
+                            "from_date": from_date.strftime("%Y-%m-%d"),
+                            "to_date": to_date.strftime("%Y-%m-%d")
+                        })
+                
                 response = None
                 for i, params in enumerate(param_attempts, 1):
                     try:
-                        logger.info(f"🔍 SDK attempt {i}/3 for {underlying_symbol}: {params}")
-                        response = self.sdk.historical_daily_data(**params)
+                        # Clean params - remove None values
+                        clean_params = {k: v for k, v in params.items() if v is not None}
+                        logger.info(f"🔍 SDK attempt {i}/{len(param_attempts)} for {underlying_symbol}: {clean_params}")
+                        response = self.sdk.historical_daily_data(**clean_params)
                         
                         if response and isinstance(response, dict) and response.get('status') == 'success':
                             logger.info(f"✅ SDK attempt {i} succeeded for {underlying_symbol}")
