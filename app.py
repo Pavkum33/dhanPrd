@@ -277,13 +277,46 @@ def scanner_update():
     
     return jsonify({'success': True})
 
+def run_scanner_background():
+    """Run the scanner in a separate thread"""
+    try:
+        # Check for credentials
+        client_id = os.getenv('DHAN_CLIENT_ID')
+        access_token = os.getenv('DHAN_ACCESS_TOKEN')
+        
+        if client_id and access_token:
+            print("Starting live scanner with Dhan credentials...")
+            # Import and run scanner
+            from scanner import main as scanner_main
+            asyncio.run(scanner_main('config.json'))
+        else:
+            print("No Dhan credentials found - running in demo mode only")
+            # Keep thread alive but don't run scanner
+            while True:
+                time.sleep(60)
+                
+    except Exception as e:
+        print(f"Scanner error: {e}", file=sys.stderr)
+
 if __name__ == '__main__':
     # Initialize database
     init_db()
     
-    # Check if running in Docker
-    host = '0.0.0.0' if os.getenv('DOCKER_CONTAINER') else '127.0.0.1'
+    # Start scanner in background thread if credentials are available
+    client_id = os.getenv('DHAN_CLIENT_ID')
+    access_token = os.getenv('DHAN_ACCESS_TOKEN')
+    
+    if client_id and access_token:
+        print("Starting background scanner thread...")
+        scanner_thread = threading.Thread(target=run_scanner_background, daemon=True)
+        scanner_thread.start()
+        time.sleep(2)  # Give scanner time to initialize
+    else:
+        print("Running in demo mode - add DHAN credentials for live scanning")
+    
+    # Get port from Railway environment
     port = int(os.getenv('PORT', 5000))
+    host = '0.0.0.0'  # Railway requires binding to 0.0.0.0
     
     print(f"Starting F&O Scanner Dashboard on {host}:{port}")
     socketio.run(app, host=host, port=port, debug=False)
