@@ -227,8 +227,31 @@
                                         <h4>Narrow CPR Stocks</h4>
                                         <span class="results-count" id="cprResultsCount">0 found</span>
                                     </div>
-                                    <div class="results-list" id="cprResultsList">
+                                    
+                                    <!-- Professional Data Controls -->
+                                    <div class="results-controls" id="cprResultsControls" style="display: none;">
+                                        <input type="text" class="results-search" id="cprSearch" placeholder="Search stocks...">
+                                        <select class="results-sort" id="cprSort">
+                                            <option value="symbol">Symbol</option>
+                                            <option value="width">CPR Width</option>
+                                            <option value="volume">Volume</option>
+                                        </select>
+                                        <div class="results-density">
+                                            <button class="density-btn active" data-density="normal">N</button>
+                                            <button class="density-btn" data-density="compact">C</button>
+                                            <button class="density-btn" data-density="ultra">U</button>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="results-list" id="cprResultsList" data-scanner="cpr">
                                         <div class="no-results">No narrow CPR stocks detected</div>
+                                    </div>
+                                    
+                                    <!-- Pagination for large datasets -->
+                                    <div class="results-pagination" id="cprPagination" style="display: none;">
+                                        <button class="pagination-btn" id="cprPrevPage" disabled>‹</button>
+                                        <span class="pagination-info" id="cprPageInfo">1 / 1</span>
+                                        <button class="pagination-btn" id="cprNextPage" disabled>›</button>
                                     </div>
                                 </div>
                             </div>
@@ -265,8 +288,31 @@
                                         <h4>Near Pivot Stocks</h4>
                                         <span class="results-count" id="pivotResultsCount">0 found</span>
                                     </div>
-                                    <div class="results-list" id="pivotResultsList">
+                                    
+                                    <!-- Professional Data Controls -->
+                                    <div class="results-controls" id="pivotResultsControls" style="display: none;">
+                                        <input type="text" class="results-search" id="pivotSearch" placeholder="Search stocks...">
+                                        <select class="results-sort" id="pivotSort">
+                                            <option value="symbol">Symbol</option>
+                                            <option value="proximity">Proximity</option>
+                                            <option value="volume">Volume</option>
+                                        </select>
+                                        <div class="results-density">
+                                            <button class="density-btn active" data-density="normal">N</button>
+                                            <button class="density-btn" data-density="compact">C</button>
+                                            <button class="density-btn" data-density="ultra">U</button>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="results-list" id="pivotResultsList" data-scanner="pivot">
                                         <div class="no-results">No stocks near pivot detected</div>
+                                    </div>
+                                    
+                                    <!-- Pagination for large datasets -->
+                                    <div class="results-pagination" id="pivotPagination" style="display: none;">
+                                        <button class="pagination-btn" id="pivotPrevPage" disabled>‹</button>
+                                        <span class="pagination-info" id="pivotPageInfo">1 / 1</span>
+                                        <button class="pagination-btn" id="pivotNextPage" disabled>›</button>
                                     </div>
                                 </div>
                             </div>

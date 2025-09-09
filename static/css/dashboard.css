@@ -98,12 +98,23 @@ body {
 
 /* Multi-Scan Interface Styles */
 
-/* Scanner Cards Grid */
+/* Scanner Cards Grid - Professional Data Handling */
 .scanner-cards-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
     gap: 1.5rem;
     margin-bottom: 2rem;
+    
+    /* Adaptive grid for high data density */
+    &.high-density {
+        grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+        gap: 1rem;
+    }
+    
+    &.ultra-density {
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 0.75rem;
+    }
 }
 
 .scanner-card {
@@ -212,6 +223,66 @@ body {
     background: var(--bg-tertiary);
     border-radius: 8px;
     padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    min-height: 250px; /* Ensure consistent card heights */
+}
+
+/* Professional Data Controls */
+.results-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    gap: 0.5rem;
+}
+
+.results-search {
+    flex: 1;
+    max-width: 150px;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 0.75rem;
+}
+
+.results-sort {
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.results-density {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.density-btn {
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 0.6rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.density-btn.active {
+    background: var(--accent-primary);
+    color: white;
+    border-color: var(--accent-primary);
+}
+
+.density-btn:hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
 }
 
 .results-header {
@@ -239,6 +310,48 @@ body {
 .results-list {
     max-height: 200px;
     overflow-y: auto;
+    flex: 1;
+    position: relative;
+}
+
+/* Virtual Scrolling Container */
+.results-list.virtual-scroll {
+    height: 200px;
+    overflow: hidden;
+}
+
+.virtual-viewport {
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.virtual-spacer {
+    pointer-events: none;
+}
+
+.virtual-items {
+    position: relative;
+}
+
+/* High-Density Display Modes */
+.results-list.compact .result-item {
+    padding: 0.5rem;
+    font-size: 0.75rem;
+}
+
+.results-list.ultra-compact .result-item {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.7rem;
+    min-height: auto;
+}
+
+.results-list.ultra-compact .result-symbol {
+    font-size: 0.7rem;
+}
+
+.results-list.ultra-compact .result-value {
+    font-size: 0.65rem;
 }
 
 .no-results {
@@ -294,6 +407,124 @@ body {
 .result-value.breakout {
     color: var(--accent-warning);
     font-weight: 500;
+}
+
+/* Professional Trader Features */
+.result-item.priority-high {
+    border-left: 3px solid var(--accent-danger);
+    background: rgba(255, 56, 96, 0.05);
+}
+
+.result-item.priority-medium {
+    border-left: 3px solid var(--accent-warning);
+    background: rgba(255, 170, 0, 0.05);
+}
+
+.result-item.priority-low {
+    border-left: 3px solid var(--accent-success);
+    background: rgba(0, 255, 136, 0.05);
+}
+
+/* Professional Data Badges */
+.result-badges {
+    display: flex;
+    gap: 0.25rem;
+    margin-top: 0.25rem;
+}
+
+.result-badge {
+    font-size: 0.6rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 8px;
+    text-transform: uppercase;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+}
+
+.result-badge.volume-high {
+    background: rgba(0, 212, 255, 0.2);
+    color: var(--accent-primary);
+    border: 1px solid rgba(0, 212, 255, 0.3);
+}
+
+.result-badge.price-action {
+    background: rgba(255, 170, 0, 0.2);
+    color: var(--accent-warning);
+    border: 1px solid rgba(255, 170, 0, 0.3);
+}
+
+.result-badge.trend-strong {
+    background: rgba(0, 255, 136, 0.2);
+    color: var(--accent-success);
+    border: 1px solid rgba(0, 255, 136, 0.3);
+}
+
+/* Enhanced Result Display */
+.result-detail {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+    display: flex;
+    justify-content: space-between;
+}
+
+.result-change {
+    font-weight: 500;
+    font-family: monospace;
+}
+
+.result-change.positive {
+    color: var(--accent-success);
+}
+
+.result-change.negative {
+    color: var(--accent-danger);
+}
+
+/* Pagination Controls */
+.results-pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.pagination-btn {
+    padding: 0.25rem 0.5rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.7rem;
+    min-width: 24px;
+    text-align: center;
+    transition: all 0.2s ease;
+}
+
+.pagination-btn:hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
+
+.pagination-btn.active {
+    background: var(--accent-primary);
+    color: white;
+    border-color: var(--accent-primary);
+}
+
+.pagination-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.pagination-info {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    margin: 0 0.5rem;
 }
 
 /* Multi-Scan Controls */

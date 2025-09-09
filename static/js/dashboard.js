@@ -897,19 +897,23 @@ class DhanScanner {
         
         const resultsList = document.getElementById('cprResultsList');
         const resultsCount = document.getElementById('cprResultsCount');
+        const controlsDiv = document.getElementById('cprResultsControls');
         
         if (resultsList && resultsCount) {
             resultsCount.textContent = detected + ' found';
             
+            // Show/hide controls based on data size
+            if (controlsDiv) {
+                controlsDiv.style.display = detected > 5 ? 'flex' : 'none';
+            }
+            
             if (detected === 0) {
                 resultsList.innerHTML = '<div class="no-results">No narrow CPR stocks detected</div>';
             } else {
-                resultsList.innerHTML = data.map(stock => `
-                    <div class="result-item">
-                        <span class="result-symbol">${stock.symbol}</span>
-                        <span class="result-value narrow">${stock.cpr_width_percent.toFixed(3)}%</span>
-                    </div>
-                `).join('');
+                // Store raw data for filtering/sorting
+                this.cprData = data;
+                this.renderPaginatedResults('cpr', data);
+                this.setupDataControls('cpr');
             }
         }
     }
@@ -920,19 +924,23 @@ class DhanScanner {
         
         const resultsList = document.getElementById('pivotResultsList');
         const resultsCount = document.getElementById('pivotResultsCount');
+        const controlsDiv = document.getElementById('pivotResultsControls');
         
         if (resultsList && resultsCount) {
             resultsCount.textContent = detected + ' found';
             
+            // Show/hide controls based on data size
+            if (controlsDiv) {
+                controlsDiv.style.display = detected > 5 ? 'flex' : 'none';
+            }
+            
             if (detected === 0) {
                 resultsList.innerHTML = '<div class="no-results">No stocks near pivot detected</div>';
             } else {
-                resultsList.innerHTML = data.map(stock => `
-                    <div class="result-item">
-                        <span class="result-symbol">${stock.symbol}</span>
-                        <span class="result-value near-pivot">${stock.proximity_percent.toFixed(3)}%</span>
-                    </div>
-                `).join('');
+                // Store raw data for filtering/sorting
+                this.pivotData = data;
+                this.renderPaginatedResults('pivot', data);
+                this.setupDataControls('pivot');
             }
         }
     }
@@ -1051,6 +1059,208 @@ class DhanScanner {
                 clearInterval(pollInterval);
             }
         }, 10000); // Poll every 10 seconds
+    }
+    
+    // Professional Data Handling Methods
+    renderPaginatedResults(scannerType, data, page = 1, pageSize = 10) {
+        const resultsList = document.getElementById(`${scannerType}ResultsList`);
+        const paginationDiv = document.getElementById(`${scannerType}Pagination`);
+        
+        if (!resultsList || !data || data.length === 0) return;
+        
+        // Calculate pagination
+        const totalPages = Math.ceil(data.length / pageSize);
+        const startIndex = (page - 1) * pageSize;
+        const endIndex = Math.min(startIndex + pageSize, data.length);
+        const pageData = data.slice(startIndex, endIndex);
+        
+        // Show/hide pagination controls
+        if (paginationDiv) {
+            paginationDiv.style.display = totalPages > 1 ? 'flex' : 'none';
+            
+            if (totalPages > 1) {
+                const prevBtn = document.getElementById(`${scannerType}PrevPage`);
+                const nextBtn = document.getElementById(`${scannerType}NextPage`);
+                const pageInfo = document.getElementById(`${scannerType}PageInfo`);
+                
+                if (prevBtn) prevBtn.disabled = page <= 1;
+                if (nextBtn) nextBtn.disabled = page >= totalPages;
+                if (pageInfo) pageInfo.textContent = `${page} / ${totalPages}`;
+            }
+        }
+        
+        // Render results with professional features
+        resultsList.innerHTML = pageData.map(item => {
+            return this.renderResultItem(scannerType, item);
+        }).join('');
+        
+        // Store pagination state
+        this[`${scannerType}CurrentPage`] = page;
+        this[`${scannerType}PageSize`] = pageSize;
+    }
+    
+    renderResultItem(scannerType, item) {
+        let priorityClass = '';
+        let badges = '';
+        let details = '';
+        
+        // Determine priority and features based on scanner type
+        if (scannerType === 'cpr') {
+            const width = item.cpr_width_percent || 0;
+            priorityClass = width < 0.2 ? 'priority-high' : width < 0.3 ? 'priority-medium' : 'priority-low';
+            
+            badges = `
+                <div class="result-badges">
+                    ${width < 0.2 ? '<span class="result-badge volume-high">Ultra Narrow</span>' : ''}
+                    ${item.volume_above_avg ? '<span class="result-badge volume-high">High Vol</span>' : ''}
+                </div>
+            `;
+            
+            details = `
+                <div class="result-detail">
+                    <span>Pivot: ₹${item.pivot ? item.pivot.toFixed(2) : 'N/A'}</span>
+                    <span class="result-change ${item.change >= 0 ? 'positive' : 'negative'}">
+                        ${item.change >= 0 ? '+' : ''}${item.change ? item.change.toFixed(2) : '0.00'}%
+                    </span>
+                </div>
+            `;
+            
+            return `
+                <div class="result-item ${priorityClass}">
+                    <div>
+                        <span class="result-symbol">${item.symbol}</span>
+                        <span class="result-value narrow">${width.toFixed(3)}%</span>
+                    </div>
+                    ${badges}
+                    ${details}
+                </div>
+            `;
+            
+        } else if (scannerType === 'pivot') {
+            const proximity = Math.abs(item.proximity_percent || 0);
+            priorityClass = proximity < 0.1 ? 'priority-high' : proximity < 0.5 ? 'priority-medium' : 'priority-low';
+            
+            badges = `
+                <div class="result-badges">
+                    ${proximity < 0.1 ? '<span class="result-badge price-action">Very Close</span>' : ''}
+                    ${item.trend_strength === 'strong' ? '<span class="result-badge trend-strong">Strong Trend</span>' : ''}
+                </div>
+            `;
+            
+            details = `
+                <div class="result-detail">
+                    <span>Price: ₹${item.current_price ? item.current_price.toFixed(2) : 'N/A'}</span>
+                    <span>Pivot: ₹${item.pivot ? item.pivot.toFixed(2) : 'N/A'}</span>
+                </div>
+            `;
+            
+            return `
+                <div class="result-item ${priorityClass}">
+                    <div>
+                        <span class="result-symbol">${item.symbol}</span>
+                        <span class="result-value near-pivot">${item.proximity_percent.toFixed(3)}%</span>
+                    </div>
+                    ${badges}
+                    ${details}
+                </div>
+            `;
+        }
+        
+        // Fallback for other scanner types
+        return `
+            <div class="result-item">
+                <span class="result-symbol">${item.symbol}</span>
+                <span class="result-value">${item.value || 'N/A'}</span>
+            </div>
+        `;
+    }
+    
+    setupDataControls(scannerType) {
+        const searchInput = document.getElementById(`${scannerType}Search`);
+        const sortSelect = document.getElementById(`${scannerType}Sort`);
+        const densityBtns = document.querySelectorAll(`#${scannerType}ResultsControls .density-btn`);
+        const resultsList = document.getElementById(`${scannerType}ResultsList`);
+        
+        // Search functionality
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                const query = e.target.value.toLowerCase();
+                const data = this[`${scannerType}Data`] || [];
+                const filtered = data.filter(item => 
+                    item.symbol.toLowerCase().includes(query)
+                );
+                this.renderPaginatedResults(scannerType, filtered, 1);
+            });
+        }
+        
+        // Sort functionality
+        if (sortSelect) {
+            sortSelect.addEventListener('change', (e) => {
+                const sortBy = e.target.value;
+                const data = [...(this[`${scannerType}Data`] || [])];
+                
+                data.sort((a, b) => {
+                    if (sortBy === 'symbol') {
+                        return a.symbol.localeCompare(b.symbol);
+                    } else if (sortBy === 'width') {
+                        return (a.cpr_width_percent || 0) - (b.cpr_width_percent || 0);
+                    } else if (sortBy === 'proximity') {
+                        return Math.abs(a.proximity_percent || 0) - Math.abs(b.proximity_percent || 0);
+                    } else if (sortBy === 'volume') {
+                        return (b.volume || 0) - (a.volume || 0);
+                    }
+                    return 0;
+                });
+                
+                this.renderPaginatedResults(scannerType, data, 1);
+            });
+        }
+        
+        // Density controls
+        densityBtns.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                densityBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                const density = btn.dataset.density;
+                if (resultsList) {
+                    resultsList.className = resultsList.className.replace(/\b(compact|ultra-compact)\b/g, '');
+                    
+                    if (density === 'compact') {
+                        resultsList.classList.add('compact');
+                    } else if (density === 'ultra') {
+                        resultsList.classList.add('ultra-compact');
+                    }
+                }
+            });
+        });
+        
+        // Pagination controls
+        const prevBtn = document.getElementById(`${scannerType}PrevPage`);
+        const nextBtn = document.getElementById(`${scannerType}NextPage`);
+        
+        if (prevBtn) {
+            prevBtn.addEventListener('click', () => {
+                const currentPage = this[`${scannerType}CurrentPage`] || 1;
+                if (currentPage > 1) {
+                    const data = this[`${scannerType}Data`] || [];
+                    this.renderPaginatedResults(scannerType, data, currentPage - 1);
+                }
+            });
+        }
+        
+        if (nextBtn) {
+            nextBtn.addEventListener('click', () => {
+                const currentPage = this[`${scannerType}CurrentPage`] || 1;
+                const data = this[`${scannerType}Data`] || [];
+                const pageSize = this[`${scannerType}PageSize`] || 10;
+                const totalPages = Math.ceil(data.length / pageSize);
+                
+                if (currentPage < totalPages) {
+                    this.renderPaginatedResults(scannerType, data, currentPage + 1);
+                }
+            });
+        }
     }
 }
 
