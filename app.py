@@ -43,11 +43,13 @@ except ImportError:
     logger.warning("dhanhq SDK not available - using REST API fallback")
 
 # Import multi-scan modules at startup to avoid route registration issues
+MULTI_SCAN_AVAILABLE = False
+cache_manager = None
+level_calculator = None
+
 try:
     from cache_manager import CacheManager
     from scanners.monthly_levels import MonthlyLevelCalculator
-    from premarket_job import PremarketJob
-    from dhan_fetcher import DhanHistoricalFetcher as DhanFetcher
     MULTI_SCAN_AVAILABLE = True
     logger.info("Multi-scan modules loaded successfully")
     
@@ -56,10 +58,18 @@ try:
     level_calculator = MonthlyLevelCalculator(cache_manager)
     
 except ImportError as e:
-    MULTI_SCAN_AVAILABLE = False
     logger.warning(f"Multi-scan modules not available: {e}")
+    MULTI_SCAN_AVAILABLE = False
     cache_manager = None
     level_calculator = None
+
+# Import DhanHistoricalFetcher from external module if available
+try:
+    from dhan_fetcher import DhanHistoricalFetcher
+    logger.info("Using external DhanHistoricalFetcher from dhan_fetcher.py")
+except ImportError:
+    logger.info("Using built-in DhanHistoricalFetcher")
+    # Will use the class defined below
 
 # Historical Data Fetcher Classes
 class DhanHistoricalFetcher:
