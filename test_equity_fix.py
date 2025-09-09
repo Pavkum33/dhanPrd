@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Test script to validate the equity loading fix
-Mimics the working sample pattern for debugging
+Test script to validate the equity loading fix using CSV download pattern
+Exactly matches the working sample pattern
 """
 
 import asyncio
 import aiohttp
 import logging
 import os
+import csv
+import time
 from datetime import datetime, timedelta
 
 # Setup logging
@@ -18,6 +20,9 @@ logging.basicConfig(
 logger = logging.getLogger("equity_test")
 
 BASE_URL = "https://api.dhan.co"
+DATA_DIR = "data"
+EQ_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
+EQ_FILE = os.path.join(DATA_DIR, "nse_eq.csv")
 
 class EquityTester:
     def __init__(self, client_id: str, access_token: str):
@@ -29,41 +34,62 @@ class EquityTester:
             'access-token': access_token
         }
     
-    async def test_equity_loading(self):
-        """Test loading NSE equity instruments"""
-        url = f"{BASE_URL}/v2/instruments/NSE_EQ.json"
-        
-        # Use public session without auth headers (following working sample)
+    async def download_csv_if_needed(self, url: str, filepath: str) -> bool:
+        """Download CSV file if missing or older than 24h"""
+        if os.path.exists(filepath):
+            age = time.time() - os.path.getmtime(filepath)
+            if age < 86400:  # < 24h
+                logger.info(f"Using cached {os.path.basename(filepath)}")
+                return True
+
+        logger.info(f"Downloading {os.path.basename(filepath)}...")
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.get(url) as response:
                     if response.status == 200:
-                        instruments = await response.json()
-                        logger.info(f"✅ Fetched {len(instruments)} instruments from NSE_EQ.json")
-                        
-                        # Create symbol → securityId mapping
-                        equity_mapping = {}
-                        for inst in instruments:
-                            if inst.get("instrumentType") in ["EQUITY", "INDEX"]:
-                                symbol = inst.get("symbol")
-                                security_id = inst.get("securityId")
-                                if symbol and security_id:
-                                    equity_mapping[symbol] = security_id
-                        
-                        logger.info(f"✅ Created {len(equity_mapping)} symbol→securityId mappings")
-                        
-                        # Show sample mappings
-                        sample_symbols = list(equity_mapping.keys())[:5]
-                        for sym in sample_symbols:
-                            logger.info(f"Sample: {sym} → {equity_mapping[sym]}")
-                        
-                        return equity_mapping
+                        text = await response.text()
+                        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(text)
+                        logger.info(f"✅ Saved {os.path.basename(filepath)}")
+                        return True
                     else:
-                        logger.error(f"❌ Failed to fetch NSE_EQ.json: {response.status}")
-                        return {}
+                        logger.error(f"❌ Failed to download {url}: {response.status}")
+                        return False
             except Exception as e:
-                logger.exception(f"❌ Error loading equity instruments: {e}")
+                logger.exception(f"❌ Error downloading {url}: {e}")
+                return False
+    
+    async def test_equity_loading(self):
+        """Test loading NSE equity instruments from CSV"""
+        try:
+            # Download CSV if needed
+            if not await self.download_csv_if_needed(EQ_URL, EQ_FILE):
+                logger.error("❌ Failed to download equity CSV")
                 return {}
+            
+            # Parse CSV to create symbol → securityId mapping
+            equity_mapping = {}
+            with open(EQ_FILE, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    symbol = row.get("SEM_TRADING_SYMBOL")
+                    security_id = row.get("SEM_SMST_SECURITY_ID")
+                    if symbol and security_id:
+                        equity_mapping[symbol.strip()] = security_id.strip()
+            
+            logger.info(f"✅ Loaded {len(equity_mapping)} equity instruments from CSV")
+            
+            # Show sample mappings
+            sample_symbols = list(equity_mapping.keys())[:5]
+            for sym in sample_symbols:
+                logger.info(f"Sample: {sym} → {equity_mapping[sym]}")
+            
+            return equity_mapping
+            
+        except Exception as e:
+            logger.exception(f"❌ Error loading equity instruments from CSV: {e}")
+            return {}
     
     async def test_historical_fetch(self, equity_mapping):
         """Test historical data fetching for sample symbols"""

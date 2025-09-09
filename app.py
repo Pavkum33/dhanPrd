@@ -187,46 +187,78 @@ class DhanHistoricalFetcher:
         
         return active_futures
     
-    async def load_equity_instruments(self) -> dict:
-        """Load NSE equity instrument master and create symbol → securityId mapping
+    async def download_csv_if_needed(self, url: str, filepath: str) -> bool:
+        """Download CSV file if missing or older than 24h"""
+        import os
+        import time
         
-        Uses public Dhan API endpoint (no auth required) following working sample pattern
-        """
-        url = f"{self.base_url}/v2/instruments/NSE_EQ.json"
-        
+        if os.path.exists(filepath):
+            age = time.time() - os.path.getmtime(filepath)
+            if age < 86400:  # < 24h
+                logger.info(f"Using cached {os.path.basename(filepath)}")
+                return True
+
+        logger.info(f"Downloading {os.path.basename(filepath)}...")
         try:
-            # Create a separate session without auth headers for public endpoint
+            # Use public session (no auth needed for CSV downloads)
             async with aiohttp.ClientSession() as public_session:
                 async with public_session.get(url) as response:
                     if response.status == 200:
-                        instruments = await response.json()
-                        logger.info(f"✅ Fetched {len(instruments)} instruments from NSE_EQ.json")
-                        
-                        # Create symbol → securityId mapping for NSE equities and indices
-                        equity_mapping = {}
-                        for inst in instruments:
-                            # Handle both EQUITY and INDEX instrument types
-                            if inst.get("instrumentType") in ["EQUITY", "INDEX"]:
-                                symbol = inst.get("symbol")
-                                security_id = inst.get("securityId")
-                                if symbol and security_id:
-                                    equity_mapping[symbol] = security_id
-                        
-                        logger.info(f"✅ Loaded {len(equity_mapping)} NSE equity/index instruments for symbol→securityId mapping")
-                        
-                        # Debug: Show sample mappings
-                        sample_symbols = list(equity_mapping.keys())[:5]
-                        for sym in sample_symbols:
-                            logger.info(f"Sample mapping: {sym} → {equity_mapping[sym]}")
-                        
-                        return equity_mapping
+                        text = await response.text()
+                        # Ensure directory exists
+                        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(text)
+                        logger.info(f"✅ Saved {os.path.basename(filepath)}")
+                        return True
                     else:
-                        logger.error(f"❌ Failed to fetch NSE_EQ.json: HTTP {response.status}")
-                        response_text = await response.text()
-                        logger.error(f"Response: {response_text[:200]}")
-                        return {}
+                        logger.error(f"❌ Failed to download {url}: {response.status}")
+                        return False
         except Exception as e:
-            logger.exception(f"❌ Error loading NSE equity instruments: {e}")
+            logger.exception(f"❌ Error downloading {url}: {e}")
+            return False
+
+    async def load_equity_instruments(self) -> dict:
+        """Load NSE equity instrument master from CSV and create symbol → securityId mapping
+        
+        Downloads and caches CSV files from Dhan following the working sample pattern
+        """
+        import os
+        import csv
+        
+        # CSV URLs and local paths
+        eq_url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+        data_dir = "data"
+        eq_file = os.path.join(data_dir, "nse_eq.csv")
+        
+        try:
+            # Download CSV if needed (auto-caching with 24h refresh)
+            if not await self.download_csv_if_needed(eq_url, eq_file):
+                logger.error("❌ Failed to download equity CSV")
+                return {}
+            
+            # Parse CSV to create symbol → securityId mapping
+            equity_mapping = {}
+            with open(eq_file, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    # Use column names from your working sample
+                    symbol = row.get("SEM_TRADING_SYMBOL")
+                    security_id = row.get("SEM_SMST_SECURITY_ID")
+                    if symbol and security_id:
+                        equity_mapping[symbol.strip()] = security_id.strip()
+            
+            logger.info(f"✅ Loaded {len(equity_mapping)} equity instruments from CSV for symbol→securityId mapping")
+            
+            # Debug: Show sample mappings
+            sample_symbols = list(equity_mapping.keys())[:5]
+            for sym in sample_symbols:
+                logger.info(f"Sample mapping: {sym} → {equity_mapping[sym]}")
+            
+            return equity_mapping
+            
+        except Exception as e:
+            logger.exception(f"❌ Error loading equity instruments from CSV: {e}")
             return {}
 
     async def get_historical_data_for_underlying(self, underlying_symbol: str, security_id: int, days: int = 60, interval: str = "1d") -> pd.DataFrame:
