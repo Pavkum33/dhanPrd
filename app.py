@@ -280,6 +280,8 @@ class DhanHistoricalFetcher:
         to_date = datetime.now().date()
         from_date = to_date - timedelta(days=days + 5)
         
+        logger.info(f"Fetching historical data: securityId={security_id}, exchangeSegment=2, instrumentType=FUTSTK")
+        
         # Method 1: Try dhanhq SDK first (more reliable)
         if self.use_sdk and hasattr(self, 'sdk'):
             try:
@@ -287,11 +289,11 @@ class DhanHistoricalFetcher:
                 
                 def sdk_call():
                     try:
-                        # SDK call for historical daily data
+                        # SDK call for historical daily data - use correct parameters for FUTSTK
                         result = self.sdk.historical_daily_data(
-                            securityId=security_id,
-                            exchangeSegment="NSE_FUT", 
-                            instrumentType="FUTURE",
+                            securityId=int(security_id),  # Must be numeric
+                            exchangeSegment=2,            # NSE Futures = 2 (not string)
+                            instrumentType="FUTSTK",      # Stock futures (not generic "FUTURE")
                             fromDate=from_date.strftime("%Y-%m-%d"),
                             toDate=to_date.strftime("%Y-%m-%d")
                         )
@@ -339,9 +341,9 @@ class DhanHistoricalFetcher:
         # Method 2: Fallback to REST API
         url = f"{self.base_url}/charts/historical"
         payload = {
-            "securityId": security_id,
-            "exchangeSegment": "NSE_FUT",
-            "instrument": "FUTURE",
+            "securityId": int(security_id),  # Must be numeric
+            "exchangeSegment": 2,            # NSE Futures = 2 
+            "instrument": "FUTSTK",          # Stock futures
             "fromDate": from_date.strftime("%Y-%m-%d"),
             "toDate": to_date.strftime("%Y-%m-%d")
         }
@@ -505,25 +507,36 @@ async def fetch_and_analyze_historical_data():
             
             # Prepare securities list (limit to first 15 for stability)
             securities = []
+            
+            # Define column mappings for FUTSTK data extraction
+            def find_col(*candidates):
+                for c in candidates:
+                    if c in fno_df.columns:
+                        return c
+                return None
+            
+            sid_col = find_col('SECURITY_ID','securityId','SEM_SMST_SECURITY_ID','SCRIP_CODE','SECURITYID')
+            sym_col = find_col('SYMBOL_NAME','tradingSymbol','SEM_SMST_SECURITY_SYMBOL','symbolName','InstrumentName','SYMBOL')
+            underlying_col = find_col('UNDERLYING_SYMBOL','underlying','underlyingSymbol')
+            
+            logger.info(f"Using columns: sid={sid_col}, symbol={sym_col}, underlying={underlying_col}")
+            
             for _, row in fno_df.head(15).iterrows():
-                security_id = None
-                symbol = None
-                
-                for col in row.index:
-                    if 'security' in col.lower() and 'id' in col.lower():
-                        security_id = str(row[col])
-                        break
-                
-                for col in row.index:
-                    if any(x in col.lower() for x in ['symbol', 'name', 'trading']):
-                        symbol = str(row[col])
-                        break
-                
-                if security_id and symbol:
+                if sid_col and sym_col and sid_col in row.index and sym_col in row.index:
+                    security_id = str(row[sid_col])
+                    symbol = str(row[sym_col])
+                    underlying = str(row[underlying_col]) if underlying_col and underlying_col in row.index else symbol
+                    
+                    # Debug: Show what we're extracting
+                    logger.info(f"Extracted: securityId={security_id}, symbol={symbol}, underlying={underlying}")
+                    
                     securities.append({
                         'security_id': security_id,
-                        'symbol': symbol
+                        'symbol': underlying,  # Use underlying symbol for display (NYKAA vs NYKAFUT)
+                        'trading_symbol': symbol  # Keep trading symbol for reference
                     })
+                else:
+                    logger.warning(f"Missing required columns in row: {list(row.index)}")
             
             total_securities = len(securities)
             emit_progress('prepared', f'Prepared {total_securities} F&O securities for analysis', 0, total_securities)
