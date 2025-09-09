@@ -49,16 +49,32 @@ level_calculator = None
 
 try:
     from cache_manager import CacheManager
+    logger.info("CacheManager module imported")
+    
     from scanners.monthly_levels import MonthlyLevelCalculator
-    MULTI_SCAN_AVAILABLE = True
-    logger.info("Multi-scan modules loaded successfully")
+    logger.info("MonthlyLevelCalculator module imported")
     
     # Initialize global instances
     cache_manager = CacheManager()
+    logger.info("CacheManager instance created")
+    
     level_calculator = MonthlyLevelCalculator(cache_manager)
+    logger.info("MonthlyLevelCalculator instance created")
+    
+    MULTI_SCAN_AVAILABLE = True
+    logger.info("Multi-scan modules loaded successfully")
     
 except ImportError as e:
-    logger.warning(f"Multi-scan modules not available: {e}")
+    logger.error(f"Multi-scan module import failed: {e}")
+    import traceback
+    logger.error(traceback.format_exc())
+    MULTI_SCAN_AVAILABLE = False
+    cache_manager = None
+    level_calculator = None
+except Exception as e:
+    logger.error(f"Multi-scan module initialization failed: {e}")
+    import traceback
+    logger.error(traceback.format_exc())
     MULTI_SCAN_AVAILABLE = False
     cache_manager = None
     level_calculator = None
