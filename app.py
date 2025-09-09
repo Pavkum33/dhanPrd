@@ -374,7 +374,29 @@ class DhanHistoricalFetcher:
                             logger.error(f"❌ {underlying_symbol}: SDK API error: {error_msg}")
                             return pd.DataFrame()
                         elif response.get('status') == 'success':
-                            candles = response.get('data', [])
+                            raw_data = response.get('data', {})
+                            # SDK returns data as separate arrays, convert to list of dicts
+                            if isinstance(raw_data, dict) and 'open' in raw_data:
+                                opens = raw_data.get('open', [])
+                                highs = raw_data.get('high', [])
+                                lows = raw_data.get('low', [])
+                                closes = raw_data.get('close', [])
+                                volumes = raw_data.get('volume', [])
+                                timestamps = raw_data.get('timestamp', [])
+                                
+                                # Convert arrays to list of candle dicts
+                                candles = []
+                                for i in range(len(opens)):
+                                    candles.append({
+                                        'open': opens[i] if i < len(opens) else 0,
+                                        'high': highs[i] if i < len(highs) else 0,
+                                        'low': lows[i] if i < len(lows) else 0,
+                                        'close': closes[i] if i < len(closes) else 0,
+                                        'volume': volumes[i] if i < len(volumes) else 0,
+                                        'timestamp': timestamps[i] if i < len(timestamps) else 0
+                                    })
+                            else:
+                                candles = raw_data if isinstance(raw_data, list) else []
                         else:
                             # Try to get data anyway for other status types
                             candles = response.get('data', response.get('candles', []))
@@ -386,37 +408,26 @@ class DhanHistoricalFetcher:
                     if candles and len(candles) > 0:
                         logger.info(f"✅ {underlying_symbol}: Got {len(candles)} candles via SDK")
                         
-                        # Convert SDK result to DataFrame (handle multiple timestamp formats)
+                        # Convert SDK result to DataFrame 
                         df_data = []
                         for candle in candles:
-                            # Try different timestamp field names and formats
-                            candle_date = None
-                            for time_field in ['start_Time', 'timestamp', 'date', 'time']:
-                                if time_field in candle:
-                                    timestamp = candle[time_field]
-                                    try:
-                                        if isinstance(timestamp, (int, float)):
-                                            # Unix timestamp (seconds or milliseconds)
-                                            if timestamp > 1e10:  # Milliseconds
-                                                candle_date = datetime.fromtimestamp(timestamp / 1000)
-                                            else:  # Seconds
-                                                candle_date = datetime.fromtimestamp(timestamp)
-                                        elif isinstance(timestamp, str):
-                                            candle_date = pd.to_datetime(timestamp)
-                                        break
-                                    except:
-                                        continue
-                            
-                            if not candle_date:
+                            # Handle timestamp conversion
+                            timestamp = candle.get('timestamp', 0)
+                            try:
+                                if timestamp > 1e10:  # Milliseconds
+                                    candle_date = datetime.fromtimestamp(timestamp / 1000)
+                                else:  # Seconds
+                                    candle_date = datetime.fromtimestamp(timestamp)
+                            except:
                                 candle_date = datetime.now()
                             
                             df_data.append({
                                 'date': candle_date,
-                                'open': float(candle.get('open', candle.get('o', 0))),
-                                'high': float(candle.get('high', candle.get('h', 0))), 
-                                'low': float(candle.get('low', candle.get('l', 0))),
-                                'close': float(candle.get('close', candle.get('c', 0))),
-                                'volume': float(candle.get('volume', candle.get('v', 0)))
+                                'open': float(candle.get('open', 0)),
+                                'high': float(candle.get('high', 0)), 
+                                'low': float(candle.get('low', 0)),
+                                'close': float(candle.get('close', 0)),
+                                'volume': float(candle.get('volume', 0))
                             })
                         
                         df = pd.DataFrame(df_data)
