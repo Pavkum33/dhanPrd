@@ -309,30 +309,40 @@ class DhanHistoricalFetcher:
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
-                    if 'data' in data and data['data']:
-                        df = pd.DataFrame(data['data'])
-                        
-                        # Normalize date column
-                        if 'timestamp' in df.columns:
-                            df['date'] = pd.to_datetime(df['timestamp'])
-                        elif 'date' in df.columns:
-                            df['date'] = pd.to_datetime(df['date'])
-                        
-                        # Ensure required columns exist
-                        required_cols = ['open', 'high', 'low', 'close', 'volume']
-                        for col in required_cols:
-                            if col not in df.columns:
-                                df[col] = 0
-                        
-                        df = df.sort_values('date').reset_index(drop=True)
-                        logger.info(f"✅ {underlying_symbol}: Fetched {len(df)} historical records using securityId={security_id}")
-                        return df[['date', 'open', 'high', 'low', 'close', 'volume']]
-                else:
-                    logger.warning(f"❌ {underlying_symbol}: API error {response.status}")
                     
-            return pd.DataFrame()
+                    # Check if data exists in response
+                    candles = data.get('data', [])
+                    if not candles:
+                        logger.warning(f"⚠️  {underlying_symbol}: No historical data available in Dhan's database (segment={exchange_segment}, type={instrument_type})")
+                        logger.info(f"This is normal for: new listings, illiquid stocks, or stocks not in F&O segment")
+                        return pd.DataFrame()  # Return empty DataFrame, don't fail the entire process
+                    
+                    df = pd.DataFrame(candles)
+                    
+                    # Normalize date column
+                    if 'timestamp' in df.columns:
+                        df['date'] = pd.to_datetime(df['timestamp'])
+                    elif 'date' in df.columns:
+                        df['date'] = pd.to_datetime(df['date'])
+                    
+                    # Ensure required columns exist
+                    required_cols = ['open', 'high', 'low', 'close', 'volume']
+                    for col in required_cols:
+                        if col not in df.columns:
+                            df[col] = 0
+                    
+                    df = df.sort_values('date').reset_index(drop=True)
+                    logger.info(f"✅ {underlying_symbol}: Successfully fetched {len(df)} candles (segment={exchange_segment}, type={instrument_type})")
+                    return df[['date', 'open', 'high', 'low', 'close', 'volume']]
+                    
+                else:
+                    logger.warning(f"❌ {underlying_symbol}: HTTP {response.status} from Dhan API")
+                    response_text = await response.text()
+                    logger.debug(f"Response: {response_text[:200]}")
+                    return pd.DataFrame()
+                    
         except Exception as e:
-            logger.exception(f"❌ {underlying_symbol}: Error fetching historical data: {e}")
+            logger.exception(f"❌ {underlying_symbol}: Exception fetching historical data: {e}")
             return pd.DataFrame()
     
     def extract_underlying_symbol(self, future_symbol: str) -> str:
@@ -589,9 +599,9 @@ async def fetch_and_analyze_historical_data():
                         
                         # Check for breakout signal
                         signal_status = "BREAKOUT" if current_analysis['breakout_signal'] else "No Signal"
-                        emit_progress('completed_symbol', f'✅ {current_symbol}: Close={current_analysis["close"]:.2f}, {signal_status}', 
+                        emit_progress('completed_symbol', f'✅ {underlying_symbol}: Close={current_analysis["close"]:.2f}, {signal_status}', 
                                     i + 1, total_securities, {
-                            'symbol': current_symbol,
+                            'symbol': underlying_symbol,
                             'close': current_analysis['close'],
                             'signal': current_analysis['breakout_signal'],
                             'successful': successful_fetches,
@@ -599,7 +609,7 @@ async def fetch_and_analyze_historical_data():
                         })
                     else:
                         failed_fetches += 1
-                        emit_progress('failed_symbol', f'❌ {underlying_symbol}: No historical data available', 
+                        emit_progress('failed_symbol', f'⚠️  {underlying_symbol}: No historical data (normal for illiquid/new stocks)', 
                                     i + 1, total_securities, {
                             'symbol': underlying_symbol,
                             'successful': successful_fetches,
@@ -608,9 +618,9 @@ async def fetch_and_analyze_historical_data():
                     
                 except Exception as e:
                     failed_fetches += 1
-                    emit_progress('error_symbol', f'❌ {current_symbol}: Error - {str(e)[:50]}...', 
+                    emit_progress('error_symbol', f'❌ {underlying_symbol}: Error - {str(e)[:50]}...', 
                                 i + 1, total_securities, {
-                        'symbol': current_symbol,
+                        'symbol': underlying_symbol,
                         'error': str(e),
                         'successful': successful_fetches,
                         'failed': failed_fetches

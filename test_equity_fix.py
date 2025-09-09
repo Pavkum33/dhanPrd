@@ -104,8 +104,16 @@ class EquityTester:
             return "NSE_EQ", "EQUITY"
 
     async def test_historical_fetch(self, equity_mapping):
-        """Test historical data fetching with correct segment AND instrumentType"""
-        test_symbols = ['RELIANCE', 'NIFTY 50', 'BANKNIFTY', 'TCS', 'INFY']
+        """Test historical data fetching with liquid stocks to validate fix"""
+        # Focus on known liquid stocks that should have historical data
+        test_symbols = [
+            'RELIANCE',    # Liquid stock, should work
+            'HDFCBANK',    # Liquid stock, should work  
+            'INFY',        # Liquid stock, should work
+            'TCS',         # Liquid stock, should work
+            'NIFTY 50',    # Index, should work
+            'BANKNIFTY'    # Index, should work
+        ]
         success, fail = 0, 0
         
         async with aiohttp.ClientSession(headers=self.headers) as session:
@@ -141,10 +149,10 @@ class EquityTester:
                             data = await response.json()
                             candles = data.get("data", [])
                             if candles:
-                                logger.info(f"✅ {symbol}: Got {len(candles)} candles (securityId: {security_id})")
+                                logger.info(f"✅ {symbol}: Got {len(candles)} candles (segment={exchange_segment}, type={instrument_type})")
                                 success += 1
                             else:
-                                logger.warning(f"❌ {symbol}: No historical data in response")
+                                logger.warning(f"⚠️  {symbol}: No historical data (normal for illiquid stocks)")
                                 fail += 1
                         else:
                             logger.warning(f"❌ {symbol}: Historical API error {response.status}")
