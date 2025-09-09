@@ -15,7 +15,7 @@
             <div class="header-content">
                 <div class="logo-section">
                     <h1 class="logo">📈 Dhan F&O Scanner</h1>
-                    <span class="version">v1.0.0</span>
+                    <span class="version">v1.1.0</span>
                 </div>
                 <div class="status-section">
                     <div class="status-indicator" id="connectionStatus">
@@ -38,6 +38,10 @@
                     <a href="#" class="nav-item active" data-tab="scanner">
                         <span class="nav-icon">🔍</span>
                         <span class="nav-text">Scanner</span>
+                    </a>
+                    <a href="#" class="nav-item" data-tab="multi-scan">
+                        <span class="nav-icon">📊</span>
+                        <span class="nav-text">Multi-Scan</span>
                     </a>
                     <a href="#" class="nav-item" data-tab="alerts">
                         <span class="nav-icon">🔔</span>
@@ -169,6 +173,209 @@
                                     </tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Multi-Scan Tab -->
+                <div class="tab-content" id="multi-scan-tab">
+                    <div class="content-header">
+                        <h2>Multi-Scan Dashboard</h2>
+                        <div class="multi-scan-controls">
+                            <button class="btn btn-success" id="runAllScans">Run All Scans</button>
+                            <button class="btn btn-primary" id="refreshLevels">Refresh Levels</button>
+                            <div class="scan-mode-toggle">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="autoRefresh">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <span class="toggle-label">Auto Refresh (30s)</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Scanner Cards Grid -->
+                    <div class="scanner-cards-grid">
+                        <!-- Monthly Narrow CPR Scanner Card -->
+                        <div class="scanner-card" id="narrowCprCard">
+                            <div class="scanner-card-header">
+                                <h3 class="scanner-title">Monthly Narrow CPR</h3>
+                                <div class="scanner-status">
+                                    <span class="status-badge" id="cprScanStatus">Ready</span>
+                                    <button class="btn btn-sm btn-primary" id="runCprScan">Scan</button>
+                                </div>
+                            </div>
+                            
+                            <div class="scanner-card-body">
+                                <div class="scanner-metrics">
+                                    <div class="metric">
+                                        <span class="metric-label">Detected</span>
+                                        <span class="metric-value" id="cprDetected">0</span>
+                                    </div>
+                                    <div class="metric">
+                                        <span class="metric-label">Threshold</span>
+                                        <span class="metric-value">< 0.5%</span>
+                                    </div>
+                                    <div class="metric">
+                                        <span class="metric-label">Last Updated</span>
+                                        <span class="metric-value" id="cprLastUpdate">Never</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="scanner-results" id="cprResults">
+                                    <div class="results-header">
+                                        <h4>Narrow CPR Stocks</h4>
+                                        <span class="results-count" id="cprResultsCount">0 found</span>
+                                    </div>
+                                    <div class="results-list" id="cprResultsList">
+                                        <div class="no-results">No narrow CPR stocks detected</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Monthly Pivot Proximity Scanner Card -->
+                        <div class="scanner-card" id="pivotCard">
+                            <div class="scanner-card-header">
+                                <h3 class="scanner-title">Monthly Pivot Proximity</h3>
+                                <div class="scanner-status">
+                                    <span class="status-badge" id="pivotScanStatus">Ready</span>
+                                    <button class="btn btn-sm btn-primary" id="runPivotScan">Scan</button>
+                                </div>
+                            </div>
+                            
+                            <div class="scanner-card-body">
+                                <div class="scanner-metrics">
+                                    <div class="metric">
+                                        <span class="metric-label">Near Pivot</span>
+                                        <span class="metric-value" id="pivotDetected">0</span>
+                                    </div>
+                                    <div class="metric">
+                                        <span class="metric-label">Range</span>
+                                        <span class="metric-value">-1% to +0.1%</span>
+                                    </div>
+                                    <div class="metric">
+                                        <span class="metric-label">Last Updated</span>
+                                        <span class="metric-value" id="pivotLastUpdate">Never</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="scanner-results" id="pivotResults">
+                                    <div class="results-header">
+                                        <h4>Near Pivot Stocks</h4>
+                                        <span class="results-count" id="pivotResultsCount">0 found</span>
+                                    </div>
+                                    <div class="results-list" id="pivotResultsList">
+                                        <div class="no-results">No stocks near pivot detected</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Resistance Breakout Scanner Card (Legacy) -->
+                        <div class="scanner-card legacy-card" id="breakoutCard">
+                            <div class="scanner-card-header">
+                                <h3 class="scanner-title">Resistance Breakout</h3>
+                                <div class="scanner-status">
+                                    <span class="status-badge" id="breakoutScanStatus">Ready</span>
+                                    <button class="btn btn-sm btn-secondary" id="runBreakoutScan">Scan</button>
+                                </div>
+                            </div>
+                            
+                            <div class="scanner-card-body">
+                                <div class="scanner-metrics">
+                                    <div class="metric">
+                                        <span class="metric-label">Breakouts</span>
+                                        <span class="metric-value" id="breakoutDetected">0</span>
+                                    </div>
+                                    <div class="metric">
+                                        <span class="metric-label">Conditions</span>
+                                        <span class="metric-value">5 of 5</span>
+                                    </div>
+                                    <div class="metric">
+                                        <span class="metric-label">Last Updated</span>
+                                        <span class="metric-value" id="breakoutLastUpdate">Never</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="scanner-results" id="breakoutResults">
+                                    <div class="results-header">
+                                        <h4>Breakout Stocks</h4>
+                                        <span class="results-count" id="breakoutResultsCount">0 found</span>
+                                    </div>
+                                    <div class="results-list" id="breakoutResultsList">
+                                        <div class="no-results">No breakout stocks detected</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- System Status Card -->
+                        <div class="scanner-card system-card" id="systemCard">
+                            <div class="scanner-card-header">
+                                <h3 class="scanner-title">System Status</h3>
+                                <div class="scanner-status">
+                                    <span class="status-badge active" id="systemStatus">Online</span>
+                                </div>
+                            </div>
+                            
+                            <div class="scanner-card-body">
+                                <div class="scanner-metrics">
+                                    <div class="metric">
+                                        <span class="metric-label">Cache</span>
+                                        <span class="metric-value" id="cacheStatus">SQLite</span>
+                                    </div>
+                                    <div class="metric">
+                                        <span class="metric-label">Symbols</span>
+                                        <span class="metric-value" id="symbolsCount">0</span>
+                                    </div>
+                                    <div class="metric">
+                                        <span class="metric-label">Uptime</span>
+                                        <span class="metric-value" id="systemUptime">00:00:00</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="scanner-results">
+                                    <div class="results-header">
+                                        <h4>Recent Activity</h4>
+                                    </div>
+                                    <div class="activity-log" id="activityLog">
+                                        <div class="activity-item">
+                                            <span class="activity-time">Starting up...</span>
+                                            <span class="activity-message">System initialized</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Multi-Scan Summary Panel -->
+                    <div class="multi-scan-summary" id="multiScanSummary">
+                        <div class="summary-header">
+                            <h3>Scan Summary</h3>
+                            <div class="summary-stats">
+                                <div class="stat-item">
+                                    <span class="stat-label">Total Scans</span>
+                                    <span class="stat-value" id="totalScans">0</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">Active Alerts</span>
+                                    <span class="stat-value" id="activeAlerts">0</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">Success Rate</span>
+                                    <span class="stat-value" id="successRate">100%</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="summary-progress" id="summaryProgress" style="display: none;">
+                            <div class="progress-bar-container">
+                                <div class="progress-bar" id="multiScanProgressBar"></div>
+                                <span class="progress-text" id="multiScanProgressText">0%</span>
+                            </div>
+                            <div class="progress-message" id="multiScanProgressMessage">Ready</div>
                         </div>
                     </div>
                 </div>

@@ -21,6 +21,7 @@ class DhanScanner {
         this.loadSettings();
         this.startUptimeCounter();
         this.checkMarketStatus();
+        this.initMultiScan();
         
         // Request notification permission
         if ('Notification' in window && Notification.permission === 'default') {
@@ -58,6 +59,35 @@ class DhanScanner {
         this.socket.on('historical_progress', (progress) => {
             this.updateProgress(progress);
         });
+        
+        // Multi-scan WebSocket events
+        this.socket.on('multi_scan_progress', (progress) => {
+            this.updateMultiScanProgress(progress.percent, progress.message);
+        });
+        
+        this.socket.on('cpr_results', (data) => {
+            this.updateCprResults(data.results);
+            this.addActivityLog(`CPR scan: ${data.results.length} narrow CPR stocks found`);
+        });
+        
+        this.socket.on('pivot_results', (data) => {
+            this.updatePivotResults(data.results);
+            this.addActivityLog(`Pivot scan: ${data.results.length} stocks near pivot`);
+        });
+        
+        this.socket.on('breakout_results', (data) => {
+            this.updateMetric('breakoutDetected', data.count);
+            this.addActivityLog(`Breakout scan: ${data.count} breakout stocks detected`);
+        });
+        
+        this.socket.on('scan_status_update', (data) => {
+            this.updateScannerStatus(data.scanner + 'ScanStatus', data.status, data.message);
+        });
+        
+        this.socket.on('system_status', (data) => {
+            if (data.cache_status) this.updateMetric('cacheStatus', data.cache_status);
+            if (data.symbols_count) this.updateMetric('symbolsCount', data.symbols_count);
+        });
     }
 
     setupEventListeners() {
@@ -87,6 +117,16 @@ class DhanScanner {
 
         // Settings
         document.getElementById('saveSettings').addEventListener('click', () => this.saveSettings());
+
+        // Multi-Scan Controls
+        document.getElementById('runAllScans')?.addEventListener('click', () => this.runAllScans());
+        document.getElementById('refreshLevels')?.addEventListener('click', () => this.refreshLevels());
+        document.getElementById('autoRefresh')?.addEventListener('change', (e) => this.toggleAutoRefresh(e.target.checked));
+        
+        // Individual Scanner Controls
+        document.getElementById('runCprScan')?.addEventListener('click', () => this.runCprScan());
+        document.getElementById('runPivotScan')?.addEventListener('click', () => this.runPivotScan());
+        document.getElementById('runBreakoutScan')?.addEventListener('click', () => this.runBreakoutScan());
 
         // Modal
         document.querySelector('.close').addEventListener('click', () => this.closeModal());
@@ -623,6 +663,394 @@ class DhanScanner {
         }
         
         chart.update();
+    }
+
+    // Multi-Scan Initialization
+    initMultiScan() {
+        // Initialize system status
+        this.updateSystemStatus();
+        this.addActivityLog('Multi-scan system initialized');
+        this.updateScanSummary();
+        
+        // Update system uptime in the multi-scan card
+        const systemUptimeElement = document.getElementById('systemUptime');
+        if (systemUptimeElement) {
+            // Share uptime with the scanner sidebar
+            const mainUptime = document.getElementById('uptime');
+            if (mainUptime) {
+                systemUptimeElement.textContent = mainUptime.textContent;
+            }
+        }
+    }
+    
+    updateSystemStatus() {
+        // Update cache status
+        this.checkCacheStatus();
+        
+        // Update symbols count
+        this.updateSymbolsCount();
+    }
+    
+    async checkCacheStatus() {
+        try {
+            const response = await fetch('/api/cache/status');
+            const data = await response.json();
+            
+            const cacheBackend = data.current_backend || 'SQLite';
+            this.updateMetric('cacheStatus', cacheBackend);
+            
+        } catch (error) {
+            console.error('Cache status error:', error);
+            this.updateMetric('cacheStatus', 'Error');
+        }
+    }
+    
+    async updateSymbolsCount() {
+        try {
+            const response = await fetch('/api/debug/instruments');
+            const data = await response.json();
+            
+            const count = data.active_futures?.length || 0;
+            this.updateMetric('symbolsCount', count);
+            
+        } catch (error) {
+            console.error('Symbols count error:', error);
+            this.updateMetric('symbolsCount', '0');
+        }
+    }
+
+    // Multi-Scan Methods
+    async runAllScans() {
+        console.log('Running all scans...');
+        this.showMultiScanProgress(true);
+        this.updateMultiScanProgress(0, 'Starting all scans...');
+        
+        let completedScans = 0;
+        const totalScans = 3;
+        
+        const updateProgress = () => {
+            completedScans++;
+            const percent = Math.round((completedScans / totalScans) * 100);
+            this.updateMultiScanProgress(percent, `Completed ${completedScans}/${totalScans} scans...`);
+        };
+        
+        try {
+            // Run scans in parallel with individual progress tracking
+            const promises = [
+                this.runCprScan().then(() => updateProgress()),
+                this.runPivotScan().then(() => updateProgress()),
+                this.runBreakoutScan().then(() => updateProgress())
+            ];
+            
+            // Use Promise.allSettled to handle individual failures gracefully
+            const results = await Promise.allSettled(promises);
+            
+            // Check results
+            const successful = results.filter(r => r.status === 'fulfilled').length;
+            const failed = results.filter(r => r.status === 'rejected').length;
+            
+            if (failed > 0) {
+                this.updateMultiScanProgress(100, `Completed with ${failed} failures`);
+                this.addActivityLog(`Multi-scan completed: ${successful} successful, ${failed} failed`);
+            } else {
+                this.updateMultiScanProgress(100, 'All scans completed successfully');
+                this.addActivityLog('All scans completed successfully');
+            }
+            
+            this.updateScanSummary();
+            
+        } catch (error) {
+            console.error('Error running all scans:', error);
+            this.addActivityLog('Critical error in multi-scan: ' + error.message);
+        } finally {
+            setTimeout(() => this.showMultiScanProgress(false), 2000);
+        }
+    }
+    
+    async runCprScan() {
+        console.log('Running CPR scan...');
+        this.updateScannerStatus('cprScanStatus', 'scanning', 'Scanning...');
+        
+        try {
+            const response = await fetch('/api/levels/narrow-cpr?month=' + this.getCurrentMonth());
+            const data = await response.json();
+            
+            this.updateCprResults(data);
+            this.updateScannerStatus('cprScanStatus', 'active', 'Complete');
+            this.updateMetric('cprLastUpdate', this.getCurrentTime());
+            
+        } catch (error) {
+            console.error('CPR scan error:', error);
+            this.updateScannerStatus('cprScanStatus', 'error', 'Error');
+            this.addActivityLog('CPR scan failed: ' + error.message);
+        }
+    }
+    
+    async runPivotScan() {
+        console.log('Running Pivot scan...');
+        this.updateScannerStatus('pivotScanStatus', 'scanning', 'Scanning...');
+        
+        try {
+            // Get current prices from scanner data (if available)
+            const currentPrices = this.getCurrentPricesFromTable();
+            const symbols = Object.keys(currentPrices);
+            
+            const response = await fetch('/api/levels/near-pivot', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    current_prices: currentPrices,
+                    symbols: symbols,
+                    month: this.getCurrentMonth()
+                })
+            });
+            
+            const data = await response.json();
+            this.updatePivotResults(data);
+            this.updateScannerStatus('pivotScanStatus', 'active', 'Complete');
+            this.updateMetric('pivotLastUpdate', this.getCurrentTime());
+            
+        } catch (error) {
+            console.error('Pivot scan error:', error);
+            this.updateScannerStatus('pivotScanStatus', 'error', 'Error');
+            this.addActivityLog('Pivot scan failed: ' + error.message);
+        }
+    }
+    
+    async runBreakoutScan() {
+        console.log('Running Breakout scan...');
+        this.updateScannerStatus('breakoutScanStatus', 'scanning', 'Scanning...');
+        
+        try {
+            // Use existing historical data functionality
+            await this.fetchHistoricalData();
+            
+            // Get breakout results from scanner table
+            const breakoutCount = this.getBreakoutCountFromTable();
+            
+            this.updateMetric('breakoutDetected', breakoutCount);
+            this.updateScannerStatus('breakoutScanStatus', 'active', 'Complete');
+            this.updateMetric('breakoutLastUpdate', this.getCurrentTime());
+            
+        } catch (error) {
+            console.error('Breakout scan error:', error);
+            this.updateScannerStatus('breakoutScanStatus', 'error', 'Error');
+            this.addActivityLog('Breakout scan failed: ' + error.message);
+        }
+    }
+    
+    async refreshLevels() {
+        console.log('Refreshing monthly levels...');
+        this.addActivityLog('Refreshing monthly levels...');
+        
+        try {
+            const response = await fetch('/api/levels/calculate', { method: 'POST' });
+            const data = await response.json();
+            
+            if (data.status === 'running') {
+                this.addActivityLog('Monthly level calculation started');
+                
+                // Poll for completion
+                this.pollForLevelsCompletion();
+            }
+            
+        } catch (error) {
+            console.error('Error refreshing levels:', error);
+            this.addActivityLog('Failed to refresh levels: ' + error.message);
+        }
+    }
+    
+    toggleAutoRefresh(enabled) {
+        if (enabled) {
+            this.autoRefreshInterval = setInterval(() => {
+                this.runAllScans();
+            }, 30000); // 30 seconds
+            this.addActivityLog('Auto refresh enabled (30s)');
+        } else {
+            if (this.autoRefreshInterval) {
+                clearInterval(this.autoRefreshInterval);
+                this.autoRefreshInterval = null;
+            }
+            this.addActivityLog('Auto refresh disabled');
+        }
+    }
+    
+    // Helper Methods
+    updateScannerStatus(statusId, className, text) {
+        const statusElement = document.getElementById(statusId);
+        if (statusElement) {
+            statusElement.className = 'status-badge ' + className;
+            statusElement.textContent = text;
+        }
+    }
+    
+    updateMetric(metricId, value) {
+        const element = document.getElementById(metricId);
+        if (element) {
+            element.textContent = value;
+        }
+    }
+    
+    updateCprResults(data) {
+        const detected = data.length || 0;
+        this.updateMetric('cprDetected', detected);
+        
+        const resultsList = document.getElementById('cprResultsList');
+        const resultsCount = document.getElementById('cprResultsCount');
+        
+        if (resultsList && resultsCount) {
+            resultsCount.textContent = detected + ' found';
+            
+            if (detected === 0) {
+                resultsList.innerHTML = '<div class="no-results">No narrow CPR stocks detected</div>';
+            } else {
+                resultsList.innerHTML = data.map(stock => `
+                    <div class="result-item">
+                        <span class="result-symbol">${stock.symbol}</span>
+                        <span class="result-value narrow">${stock.cpr_width_percent.toFixed(3)}%</span>
+                    </div>
+                `).join('');
+            }
+        }
+    }
+    
+    updatePivotResults(data) {
+        const detected = data.length || 0;
+        this.updateMetric('pivotDetected', detected);
+        
+        const resultsList = document.getElementById('pivotResultsList');
+        const resultsCount = document.getElementById('pivotResultsCount');
+        
+        if (resultsList && resultsCount) {
+            resultsCount.textContent = detected + ' found';
+            
+            if (detected === 0) {
+                resultsList.innerHTML = '<div class="no-results">No stocks near pivot detected</div>';
+            } else {
+                resultsList.innerHTML = data.map(stock => `
+                    <div class="result-item">
+                        <span class="result-symbol">${stock.symbol}</span>
+                        <span class="result-value near-pivot">${stock.proximity_percent.toFixed(3)}%</span>
+                    </div>
+                `).join('');
+            }
+        }
+    }
+    
+    showMultiScanProgress(show) {
+        const progressElement = document.getElementById('summaryProgress');
+        if (progressElement) {
+            progressElement.style.display = show ? 'block' : 'none';
+        }
+    }
+    
+    updateMultiScanProgress(percent, message) {
+        const progressBar = document.getElementById('multiScanProgressBar');
+        const progressText = document.getElementById('multiScanProgressText');
+        const progressMessage = document.getElementById('multiScanProgressMessage');
+        
+        if (progressBar) progressBar.style.width = percent + '%';
+        if (progressText) progressText.textContent = percent + '%';
+        if (progressMessage) progressMessage.textContent = message;
+    }
+    
+    addActivityLog(message) {
+        const activityLog = document.getElementById('activityLog');
+        if (activityLog) {
+            const time = new Date().toLocaleTimeString();
+            const item = document.createElement('div');
+            item.className = 'activity-item';
+            item.innerHTML = `
+                <span class="activity-time">${time}</span>
+                <span class="activity-message">${message}</span>
+            `;
+            
+            activityLog.insertBefore(item, activityLog.firstChild);
+            
+            // Keep only last 10 items
+            while (activityLog.children.length > 10) {
+                activityLog.removeChild(activityLog.lastChild);
+            }
+        }
+    }
+    
+    getCurrentMonth() {
+        const now = new Date();
+        return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    }
+    
+    getCurrentTime() {
+        return new Date().toLocaleTimeString();
+    }
+    
+    getCurrentPricesFromTable() {
+        const prices = {};
+        const rows = document.querySelectorAll('#scannerTable tbody tr');
+        
+        rows.forEach(row => {
+            const cells = row.querySelectorAll('td');
+            if (cells.length > 1) {
+                const symbol = cells[0].textContent.trim();
+                const price = parseFloat(cells[1].textContent.trim());
+                if (symbol && !isNaN(price)) {
+                    prices[symbol] = price;
+                }
+            }
+        });
+        
+        return prices;
+    }
+    
+    getBreakoutCountFromTable() {
+        let count = 0;
+        const rows = document.querySelectorAll('#scannerTable tbody tr');
+        
+        rows.forEach(row => {
+            const cells = row.querySelectorAll('td');
+            if (cells.length > 6 && cells[6].textContent.includes('BREAKOUT')) {
+                count++;
+            }
+        });
+        
+        return count;
+    }
+    
+    updateScanSummary() {
+        const totalScans = 3; // CPR + Pivot + Breakout
+        const activeAlerts = this.alerts.length;
+        const successRate = '100%'; // TODO: Calculate based on actual success/failure
+        
+        this.updateMetric('totalScans', totalScans);
+        this.updateMetric('activeAlerts', activeAlerts);
+        this.updateMetric('successRate', successRate);
+    }
+    
+    async pollForLevelsCompletion() {
+        const maxPolls = 30; // 5 minutes max
+        let polls = 0;
+        
+        const pollInterval = setInterval(async () => {
+            polls++;
+            
+            try {
+                const response = await fetch('/api/levels/premarket-summary');
+                const data = await response.json();
+                
+                if (data.status === 'completed' || polls >= maxPolls) {
+                    clearInterval(pollInterval);
+                    
+                    if (data.status === 'completed') {
+                        this.addActivityLog(`Levels updated: ${data.success_count} symbols`);
+                    } else {
+                        this.addActivityLog('Level calculation timeout');
+                    }
+                }
+                
+            } catch (error) {
+                console.error('Polling error:', error);
+                clearInterval(pollInterval);
+            }
+        }, 10000); // Poll every 10 seconds
     }
 }
 

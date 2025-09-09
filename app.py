@@ -796,6 +796,8 @@ async def fetch_and_analyze_historical_data(fetch_days: int = 75, lookback_perio
                         'failed': failed_fetches
                     })
             
+            breakouts_found = sum(1 for data in analyzed_data.values() if data['current_analysis']['breakout_signal'])
+            
             emit_progress('summary', f'Historical analysis completed: {successful_fetches} successful, {failed_fetches} failed, {skipped_duplicates} duplicates skipped', 
                         total_securities, total_securities, {
                 'total_analyzed': len(analyzed_data),
@@ -803,7 +805,15 @@ async def fetch_and_analyze_historical_data(fetch_days: int = 75, lookback_perio
                 'failed': failed_fetches,
                 'skipped_duplicates': skipped_duplicates,
                 'unique_underlyings': len(processed_underlyings),
-                'breakouts_found': sum(1 for data in analyzed_data.values() if data['current_analysis']['breakout_signal'])
+                'breakouts_found': breakouts_found
+            })
+            
+            # Emit breakout results for multi-scan dashboard
+            socketio.emit('breakout_results', {
+                'count': breakouts_found,
+                'successful': successful_fetches,
+                'analyzed': len(analyzed_data),
+                'completed_at': datetime.now().isoformat()
             })
             
             # Save analyzed data to cache file for tomorrow's use
@@ -1407,11 +1417,21 @@ def get_narrow_cpr_symbols():
         scan_results = cache.get(scan_cache_key)
         
         if scan_results and 'narrow_cpr' in scan_results:
+            results = scan_results['narrow_cpr']
+            
+            # Emit WebSocket event for real-time updates
+            socketio.emit('cpr_results', {
+                'results': results,
+                'count': len(results),
+                'month': month,
+                'last_updated': scan_results.get('last_updated')
+            })
+            
             return jsonify({
                 'month': month,
-                'narrow_cpr_symbols': scan_results['narrow_cpr'],
+                'narrow_cpr_symbols': results,
                 'total_symbols': scan_results.get('total_symbols', 0),
-                'count': len(scan_results['narrow_cpr']),
+                'count': len(results),
                 'last_updated': scan_results.get('last_updated'),
                 'retrieved_at': datetime.now().isoformat()
             })
@@ -1449,6 +1469,14 @@ def get_symbols_near_pivot():
         
         # Get symbols near pivot
         near_pivot_symbols = calculator.get_symbols_near_pivot(symbols, current_prices, month)
+        
+        # Emit WebSocket event for real-time updates
+        socketio.emit('pivot_results', {
+            'results': near_pivot_symbols,
+            'count': len(near_pivot_symbols),
+            'month': month,
+            'input_symbols': len(symbols)
+        })
         
         return jsonify({
             'month': month,
