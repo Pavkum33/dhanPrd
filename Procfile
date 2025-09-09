@@ -1,1 +1,1 @@
-web: gunicorn --bind 0.0.0.0:$PORT --workers 1 --worker-class eventlet --worker-connections 1000 --timeout 30 --keepalive 2 --log-level info --access-logfile - --error-logfile - app:app
+web: gunicorn -c gunicorn.conf.py app:app
