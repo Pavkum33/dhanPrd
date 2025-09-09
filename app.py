@@ -316,9 +316,13 @@ class DhanHistoricalFetcher:
         
         url = f"{self.base_url}/v2/chart/history"
         logger.info(f"📈 Fetching {underlying_symbol} historical data (securityId={security_id}, segment={exchange_segment}, type={instrument_type})")
+        logger.info(f"🔍 API Request: {url} with params: {params}")
         
         try:
             async with self.session.get(url, params=params) as response:
+                response_text = await response.text()
+                logger.info(f"🔍 API Response for {underlying_symbol}: Status={response.status}, Body={response_text[:500]}")
+                
                 if response.status == 200:
                     data = await response.json()
                     candles = data.get('data', [])
@@ -344,11 +348,10 @@ class DhanHistoricalFetcher:
                         df = df.sort_values('date').reset_index(drop=True)
                         return df[['date', 'open', 'high', 'low', 'close', 'volume']]
                     else:
-                        logger.warning(f"⚠️ {underlying_symbol}: No data in API response")
+                        logger.warning(f"⚠️ {underlying_symbol}: API returned empty data array. Response: {data}")
                         return pd.DataFrame()
                 else:
-                    response_text = await response.text()
-                    logger.error(f"❌ {underlying_symbol}: HTTP {response.status} - {response_text[:200]}")
+                    logger.error(f"❌ {underlying_symbol}: HTTP {response.status} - Response: {response_text}")
                     return pd.DataFrame()
         except Exception as e:
             logger.exception(f"❌ {underlying_symbol}: Exception during API call: {e}")
