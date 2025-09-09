@@ -308,14 +308,54 @@ class DhanHistoricalFetcher:
             try:
                 logger.info(f"🔄 Using dhanhq SDK for {underlying_symbol}")
                 
-                # Use correct SDK parameters (based on official GitHub repo)
-                response = self.sdk.historical_daily_data(
-                    security_id=str(security_id),  # Use security_id as per GitHub repo
-                    exchange_segment=exchange_segment,  # Use numeric segment
-                    instrument_type=instrument_type,
-                    from_date=from_date.strftime("%Y-%m-%d"), 
-                    to_date=to_date.strftime("%Y-%m-%d")
-                )
+                # Try different parameter formats to fix DH-905 error
+                logger.info(f"🔍 SDK parameters: security_id={security_id}, segment={exchange_segment}, type={instrument_type}")
+                
+                # Try multiple parameter combinations
+                param_attempts = [
+                    # Attempt 1: Original format
+                    {
+                        "security_id": str(security_id),
+                        "exchange_segment": exchange_segment,
+                        "instrument_type": instrument_type,
+                        "from_date": from_date.strftime("%Y-%m-%d"),
+                        "to_date": to_date.strftime("%Y-%m-%d")
+                    },
+                    # Attempt 2: Integer security_id
+                    {
+                        "security_id": int(security_id),
+                        "exchange_segment": exchange_segment,
+                        "instrument_type": instrument_type,
+                        "from_date": from_date.strftime("%Y-%m-%d"),
+                        "to_date": to_date.strftime("%Y-%m-%d")
+                    },
+                    # Attempt 3: String exchange_segment
+                    {
+                        "security_id": str(security_id),
+                        "exchange_segment": "NSE_INDEX" if is_index else "NSE_EQ",
+                        "instrument_type": instrument_type,
+                        "from_date": from_date.strftime("%Y-%m-%d"),
+                        "to_date": to_date.strftime("%Y-%m-%d")
+                    }
+                ]
+                
+                response = None
+                for i, params in enumerate(param_attempts, 1):
+                    try:
+                        logger.info(f"🔍 SDK attempt {i}/3 for {underlying_symbol}: {params}")
+                        response = self.sdk.historical_daily_data(**params)
+                        
+                        if response and isinstance(response, dict) and response.get('status') == 'success':
+                            logger.info(f"✅ SDK attempt {i} succeeded for {underlying_symbol}")
+                            break
+                        elif response and isinstance(response, dict) and response.get('status') == 'failure':
+                            error_msg = response.get('remarks', {}).get('error_message', 'Unknown error')
+                            logger.warning(f"⚠️ SDK attempt {i} failed for {underlying_symbol}: {error_msg}")
+                        else:
+                            logger.warning(f"⚠️ SDK attempt {i} returned unexpected response for {underlying_symbol}: {response}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ SDK attempt {i} exception for {underlying_symbol}: {e}")
+                        continue
                 
                 logger.info(f"🔍 SDK Response for {underlying_symbol}: {response}")
                 
@@ -323,10 +363,19 @@ class DhanHistoricalFetcher:
                 if response:
                     # Try different response structures
                     candles = None
-                    if isinstance(response, dict):
-                        if response.get('status') == 'success':
+                    if isinstance(response, str):
+                        logger.warning(f"⚠️ {underlying_symbol}: SDK returned string response: {response[:200]}")
+                        return pd.DataFrame()
+                    elif isinstance(response, dict):
+                        # Check for error status first
+                        if response.get('status') == 'failure':
+                            error_msg = response.get('remarks', {}).get('error_message', 'Unknown error')
+                            logger.error(f"❌ {underlying_symbol}: SDK API error: {error_msg}")
+                            return pd.DataFrame()
+                        elif response.get('status') == 'success':
                             candles = response.get('data', [])
                         else:
+                            # Try to get data anyway for other status types
                             candles = response.get('data', response.get('candles', []))
                     elif isinstance(response, list):
                         candles = response
