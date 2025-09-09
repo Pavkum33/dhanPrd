@@ -33,7 +33,8 @@ class EquityTester:
         """Test loading NSE equity instruments"""
         url = f"{BASE_URL}/v2/instruments/NSE_EQ.json"
         
-        async with aiohttp.ClientSession(headers=self.headers) as session:
+        # Use public session without auth headers (following working sample)
+        async with aiohttp.ClientSession() as session:
             try:
                 async with session.get(url) as response:
                     if response.status == 200:

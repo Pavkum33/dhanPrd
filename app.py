@@ -190,37 +190,41 @@ class DhanHistoricalFetcher:
     async def load_equity_instruments(self) -> dict:
         """Load NSE equity instrument master and create symbol → securityId mapping
         
-        Uses the correct Dhan API endpoint for NSE equity segment
+        Uses public Dhan API endpoint (no auth required) following working sample pattern
         """
         url = f"{self.base_url}/v2/instruments/NSE_EQ.json"
         
         try:
-            async with self.session.get(url) as response:
-                if response.status == 200:
-                    instruments = await response.json()
-                    logger.info(f"Fetched {len(instruments)} instruments from NSE_EQ.json")
-                    
-                    # Create symbol → securityId mapping for NSE equities and indices
-                    equity_mapping = {}
-                    for inst in instruments:
-                        # Handle both EQUITY and INDEX instrument types
-                        if inst.get("instrumentType") in ["EQUITY", "INDEX"]:
-                            symbol = inst.get("symbol")
-                            security_id = inst.get("securityId")
-                            if symbol and security_id:
-                                equity_mapping[symbol] = security_id
-                    
-                    logger.info(f"✅ Loaded {len(equity_mapping)} NSE equity/index instruments for symbol→securityId mapping")
-                    
-                    # Debug: Show sample mappings
-                    sample_symbols = list(equity_mapping.keys())[:5]
-                    for sym in sample_symbols:
-                        logger.info(f"Sample mapping: {sym} → {equity_mapping[sym]}")
-                    
-                    return equity_mapping
-                else:
-                    logger.error(f"❌ Failed to fetch NSE_EQ.json: {response.status}")
-                    return {}
+            # Create a separate session without auth headers for public endpoint
+            async with aiohttp.ClientSession() as public_session:
+                async with public_session.get(url) as response:
+                    if response.status == 200:
+                        instruments = await response.json()
+                        logger.info(f"✅ Fetched {len(instruments)} instruments from NSE_EQ.json")
+                        
+                        # Create symbol → securityId mapping for NSE equities and indices
+                        equity_mapping = {}
+                        for inst in instruments:
+                            # Handle both EQUITY and INDEX instrument types
+                            if inst.get("instrumentType") in ["EQUITY", "INDEX"]:
+                                symbol = inst.get("symbol")
+                                security_id = inst.get("securityId")
+                                if symbol and security_id:
+                                    equity_mapping[symbol] = security_id
+                        
+                        logger.info(f"✅ Loaded {len(equity_mapping)} NSE equity/index instruments for symbol→securityId mapping")
+                        
+                        # Debug: Show sample mappings
+                        sample_symbols = list(equity_mapping.keys())[:5]
+                        for sym in sample_symbols:
+                            logger.info(f"Sample mapping: {sym} → {equity_mapping[sym]}")
+                        
+                        return equity_mapping
+                    else:
+                        logger.error(f"❌ Failed to fetch NSE_EQ.json: HTTP {response.status}")
+                        response_text = await response.text()
+                        logger.error(f"Response: {response_text[:200]}")
+                        return {}
         except Exception as e:
             logger.exception(f"❌ Error loading NSE equity instruments: {e}")
             return {}
