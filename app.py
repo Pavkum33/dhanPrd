@@ -552,10 +552,21 @@ async def fetch_and_analyze_historical_data():
             successful_fetches = 0
             failed_fetches = 0
             
+            # Filter for liquid stocks only during testing
+            liquid_underlyings = {
+                'RELIANCE', 'HDFCBANK', 'INFY', 'TCS', 'ICICIBANK', 'AXISBANK', 
+                'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'ADANIENT', 'HDFC', 'BHARTIARTL'
+            }
+            
             for i, sec_info in enumerate(securities):
                 try:
                     future_symbol = sec_info['symbol']  # e.g., ADANIPORTS-Sep2025-FUT
                     underlying_symbol = fetcher.extract_underlying_symbol(future_symbol)  # e.g., ADANIPORTS
+                    
+                    # TEST MODE: Skip non-liquid stocks for focused validation
+                    if underlying_symbol not in liquid_underlyings:
+                        logger.debug(f"Skipping {underlying_symbol} (not in liquid test set)")
+                        continue
                     
                     # Resolve securityId from equity mapping (THE KEY FIX!)
                     security_id = equity_mapping.get(underlying_symbol)
