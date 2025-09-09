@@ -47,6 +47,22 @@ MULTI_SCAN_AVAILABLE = False
 cache_manager = None
 level_calculator = None
 
+# Check if files exist first
+import os
+if os.path.exists('cache_manager.py'):
+    logger.info("cache_manager.py file exists")
+else:
+    logger.error("cache_manager.py file NOT found")
+    
+if os.path.exists('scanners'):
+    logger.info("scanners directory exists")
+    if os.path.exists('scanners/monthly_levels.py'):
+        logger.info("scanners/monthly_levels.py file exists")
+    else:
+        logger.error("scanners/monthly_levels.py file NOT found")
+else:
+    logger.error("scanners directory NOT found")
+
 try:
     from cache_manager import CacheManager
     logger.info("CacheManager module imported")
