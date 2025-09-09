@@ -9,6 +9,7 @@ import sys
 import json
 import sqlite3
 import asyncio
+import pickle
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
@@ -656,12 +657,12 @@ async def fetch_and_analyze_historical_data():
                 emit_progress('error', 'No active F&O futures found in instrument master')
                 return {}
             
-            # Prepare securities list using standard CSV columns (limit to first 15 for stability)
+            # Prepare securities list using standard CSV columns (process ALL F&O futures)
             securities = []
             
             logger.info(f"Building securities from {len(fno_df)} active F&O futures...")
             
-            for _, row in fno_df.head(15).iterrows():
+            for _, row in fno_df.iterrows():
                 try:
                     # Extract required fields from standard CSV format
                     security_id = int(row['SecurityId'])
@@ -697,8 +698,9 @@ async def fetch_and_analyze_historical_data():
             
             emit_progress('instruments_loaded', f'Loaded {len(equity_mapping)} equity instruments for securityId mapping', 0, total_securities)
             
-            # Fetch historical data with rate limiting
+            # Fetch historical data with rate limiting and deduplication
             analyzed_data = {}
+            processed_underlyings = set()  # Track processed underlying symbols to avoid duplicates
             # Configuration parameters for Chartink-style analysis
             lookback_period = 50
             ema_short = 8
@@ -709,22 +711,22 @@ async def fetch_and_analyze_historical_data():
             analyzer = BreakoutAnalyzer(lookback=lookback_period, ema_short=ema_short, ema_long=ema_long)
             successful_fetches = 0
             failed_fetches = 0
+            skipped_duplicates = 0
             
-            # Filter for liquid stocks only during testing
-            liquid_underlyings = {
-                'RELIANCE', 'HDFCBANK', 'INFY', 'TCS', 'ICICIBANK', 'AXISBANK', 
-                'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'ADANIENT', 'HDFC', 'BHARTIARTL'
-            }
-            
+            # Process ALL F&O stocks (removed liquid stock filtering)
             for i, sec_info in enumerate(securities):
                 try:
                     future_symbol = sec_info['symbol']  # e.g., ADANIPORTS-Sep2025-FUT
                     underlying_symbol = fetcher.extract_underlying_symbol(future_symbol)  # e.g., ADANIPORTS
                     
-                    # TEST MODE: Skip non-liquid stocks for focused validation
-                    if underlying_symbol not in liquid_underlyings:
-                        logger.debug(f"Skipping {underlying_symbol} (not in liquid test set)")
+                    # Skip if we've already processed this underlying symbol
+                    if underlying_symbol in processed_underlyings:
+                        skipped_duplicates += 1
+                        logger.debug(f"Skipping duplicate underlying: {underlying_symbol}")
                         continue
+                    
+                    # Mark as processed
+                    processed_underlyings.add(underlying_symbol)
                     
                     # Resolve securityId from equity mapping (THE KEY FIX!)
                     security_id = equity_mapping.get(underlying_symbol)
@@ -744,7 +746,11 @@ async def fetch_and_analyze_historical_data():
                         'failed': failed_fetches
                     })
                     
-                    await asyncio.sleep(0.3)  # Rate limiting
+                    # Enhanced rate limiting for larger volume processing
+                    if i > 0 and i % 10 == 0:  # Longer pause every 10 requests
+                        await asyncio.sleep(2.0)
+                    else:
+                        await asyncio.sleep(0.5)  # Standard rate limiting
                     # Fetch underlying equity data using numeric securityId (the correct approach!)
                     df = await fetcher.get_historical_data_for_underlying(underlying_symbol, security_id)
                     
@@ -795,13 +801,35 @@ async def fetch_and_analyze_historical_data():
                         'failed': failed_fetches
                     })
             
-            emit_progress('summary', f'Historical analysis completed: {successful_fetches} successful, {failed_fetches} failed', 
+            emit_progress('summary', f'Historical analysis completed: {successful_fetches} successful, {failed_fetches} failed, {skipped_duplicates} duplicates skipped', 
                         total_securities, total_securities, {
                 'total_analyzed': len(analyzed_data),
                 'successful': successful_fetches,
                 'failed': failed_fetches,
+                'skipped_duplicates': skipped_duplicates,
+                'unique_underlyings': len(processed_underlyings),
                 'breakouts_found': sum(1 for data in analyzed_data.values() if data['current_analysis']['breakout_signal'])
             })
+            
+            # Save analyzed data to cache file for tomorrow's use
+            try:
+                cache_data = {
+                    'analyzed_data': analyzed_data,
+                    'timestamp': datetime.now().isoformat(),
+                    'total_securities': total_securities,
+                    'successful_fetches': successful_fetches,
+                    'failed_fetches': failed_fetches,
+                    'unique_underlyings': len(processed_underlyings)
+                }
+                
+                os.makedirs('cache', exist_ok=True)
+                with open('cache/historical_data.pkl', 'wb') as f:
+                    pickle.dump(cache_data, f)
+                    
+                emit_progress('cached', f'Historical data cached for future use - {len(analyzed_data)} symbols saved')
+                logger.info(f"✅ Cached {len(analyzed_data)} analyzed symbols to cache/historical_data.pkl")
+            except Exception as cache_error:
+                logger.warning(f"Failed to cache data: {cache_error}")
             
             return analyzed_data
             
@@ -1157,6 +1185,47 @@ def get_historical_data():
         'last_update': scanner_state['last_update']
     })
 
+@app.route('/api/cache/status')
+def cache_status():
+    """Check cache file status"""
+    try:
+        cache_file = 'cache/historical_data.pkl'
+        if os.path.exists(cache_file):
+            cache_age = time.time() - os.path.getmtime(cache_file)
+            cache_hours = cache_age / 3600
+            file_size = os.path.getsize(cache_file)
+            
+            # Try to read cache content
+            try:
+                with open(cache_file, 'rb') as f:
+                    cache_data = pickle.load(f)
+                symbols_count = len(cache_data.get('analyzed_data', {}))
+                timestamp = cache_data.get('timestamp', 'Unknown')
+                breakouts = sum(1 for data in cache_data.get('analyzed_data', {}).values() 
+                              if data.get('current_analysis', {}).get('breakout_signal', False))
+            except:
+                symbols_count = 0
+                timestamp = 'Unknown'
+                breakouts = 0
+            
+            return jsonify({
+                'cache_exists': True,
+                'age_hours': round(cache_hours, 1),
+                'file_size_mb': round(file_size / (1024*1024), 2),
+                'symbols_cached': symbols_count,
+                'cache_timestamp': timestamp,
+                'breakouts_cached': breakouts,
+                'is_fresh': cache_hours < 24,
+                'status': 'fresh' if cache_hours < 24 else 'expired'
+            })
+        else:
+            return jsonify({
+                'cache_exists': False,
+                'status': 'no_cache'
+            })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/debug/instruments')
 def debug_instruments():
     """Debug endpoint to check instrument master structure"""
@@ -1236,10 +1305,62 @@ def run_scanner_background():
     except Exception as e:
         print(f"Scanner error: {e}", file=sys.stderr)
 
+def load_cached_data():
+    """Load previously cached historical data if available"""
+    try:
+        cache_file = 'cache/historical_data.pkl'
+        if os.path.exists(cache_file):
+            # Check cache age
+            cache_age = time.time() - os.path.getmtime(cache_file)
+            cache_hours = cache_age / 3600
+            
+            if cache_hours < 24:  # Use cache if less than 24 hours old
+                with open(cache_file, 'rb') as f:
+                    cache_data = pickle.load(f)
+                
+                analyzed_data = cache_data.get('analyzed_data', {})
+                timestamp = cache_data.get('timestamp', 'Unknown')
+                
+                if analyzed_data:
+                    # Update scanner state with cached data
+                    scanner_state['historical_data'] = analyzed_data
+                    scanner_state['active_symbols'] = len(analyzed_data)
+                    
+                    # Convert to scanner data format
+                    scanner_data = []
+                    for sec_id, data in analyzed_data.items():
+                        analysis = data['current_analysis']
+                        scanner_data.append({
+                            'symbol': analysis['symbol'],
+                            'ltp': analysis['close'],
+                            'change': analysis['change_pct'],
+                            'volume': analysis['volume'],
+                            'resistance': analysis['resistance'],
+                            'ema8': analysis['ema_short'],
+                            'ema13': analysis['ema_long'],
+                            'signal': 'BREAKOUT' if analysis['breakout_signal'] else None
+                        })
+                    
+                    scanner_state['scanner_data'] = scanner_data
+                    scanner_state['last_update'] = timestamp
+                    
+                    print(f"✅ Loaded {len(analyzed_data)} symbols from cache (age: {cache_hours:.1f} hours)")
+                    return True
+            else:
+                print(f"⚠️ Cache expired ({cache_hours:.1f} hours old) - will fetch fresh data")
+                
+    except Exception as e:
+        print(f"⚠️ Failed to load cached data: {e}")
+    
+    return False
+
 def init_app():
     """Initialize the application"""
     # Initialize database
     init_db()
+    
+    # Load cached historical data if available
+    load_cached_data()
     
     # Start scanner in background thread if credentials are available
     client_id = os.getenv('DHAN_CLIENT_ID')
