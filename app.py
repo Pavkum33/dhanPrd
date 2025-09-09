@@ -75,8 +75,8 @@ class DhanHistoricalFetcher:
             await self.session.close()
     
     async def get_instruments(self) -> pd.DataFrame:
-        """Fetch instrument master from Dhan"""
-        url = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv"
+        """Fetch instrument master from Dhan (use the correct CSV for active F&O)"""
+        url = "https://images.dhan.co/api-data/api-scrip-master.csv"  # Use this for active F&O
         try:
             async with self.session.get(url) as response:
                 if response.status == 200:
@@ -84,7 +84,7 @@ class DhanHistoricalFetcher:
                     from io import StringIO
                     df = pd.read_csv(StringIO(content))
                     df.columns = [c.strip() for c in df.columns]
-                    logger.info(f"Fetched {len(df)} instruments")
+                    logger.info(f"Fetched {len(df)} instruments from api-scrip-master.csv")
                     return df
                 else:
                     logger.error(f"Failed to fetch instruments: {response.status}")
@@ -93,187 +93,99 @@ class DhanHistoricalFetcher:
             logger.exception(f"Error fetching instruments: {e}")
             return pd.DataFrame()
     
-    def get_futstk_instruments(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Filter for FUTSTK (stock futures) only - excludes indices, currencies, commodities"""
-        logger.info(f"Filtering FUTSTK instruments from {len(df)} total instruments...")
+    def get_active_fno_futures(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Filter for active NSE F&O Futures (current month FUTSTK + FUTIDX) based on user insights"""
+        logger.info(f"Filtering active F&O futures from {len(df)} total instruments...")
         logger.info(f"Available columns: {list(df.columns)}")
         
-        # Resolve column mappings
-        colmap = {}
-        cols = list(df.columns)
+        # Show sample data structure
+        if not df.empty:
+            sample_data = df.head(3).to_dict('records')
+            logger.info(f"Sample instruments: {sample_data}")
         
+        # Map column names for different CSV formats
         def find_col(*candidates):
             for c in candidates:
-                if c in cols:
+                if c in df.columns:
                     return c
             return None
         
-        colmap['sid'] = find_col('SECURITY_ID','securityId','SEM_SMST_SECURITY_ID','SCRIP_CODE','SECURITYID')
-        colmap['symbol'] = find_col('SYMBOL_NAME','tradingSymbol','SEM_SMST_SECURITY_SYMBOL','symbolName','InstrumentName','SYMBOL')
-        colmap['segment'] = find_col('SEGMENT','segment','SEM_SEGMENT','EXCHANGE','SEM_EXM_EXCH_ID')
-        colmap['expiry'] = find_col('EXPIRY_DATE','EXPIRY','SEM_EXPIRY_DATE')
-        colmap['instrument'] = find_col('INSTRUMENT_TYPE','instrumentType','SEM_INSTRUMENT_NAME','INSTRUMENT')
+        # Find the correct column names based on available format
+        exch_col = find_col('SEM_EXM_EXCH_ID', 'ExchangeSegment', 'EXCH_ID')
+        segment_col = find_col('SEM_SEGMENT', 'Segment', 'SEGMENT')
+        instrument_col = find_col('SEM_INSTRUMENT_NAME', 'SEM_EXCH_INSTRUMENT_TYPE', 'InstrumentType', 'INSTRUMENT_TYPE')
+        expiry_col = find_col('SEM_EXPIRY_DATE', 'ExpiryDate', 'EXPIRY_DATE')
+        sid_col = find_col('SEM_SMST_SECURITY_ID', 'SecurityId', 'SECURITY_ID')
+        symbol_col = find_col('SEM_TRADING_SYMBOL', 'TradingSymbol', 'SYMBOL_NAME')
         
-        logger.info(f"Column mapping: {colmap}")
+        logger.info(f"Column mapping: exch={exch_col}, segment={segment_col}, instrument={instrument_col}, expiry={expiry_col}")
         
-        # Debug: Show sample data structure
-        if not df.empty:
-            sample_data = df.head(5).to_dict('records')
-            logger.info(f"Sample instruments: {sample_data}")
+        # Step 1: Filter only active NSE F&O Futures
+        if not all([exch_col, instrument_col, expiry_col]):
+            logger.error(f"Missing required columns for F&O filtering")
+            return pd.DataFrame()
         
-        # Method 1: Check for INSTRUMENT_TYPE column first (Dhan format)
-        inst_col = colmap.get('instrument')
-        exp_col = colmap.get('expiry')
+        # Filter for NSE futures
+        nse_mask = df[exch_col].astype(str).str.upper().isin(['NSE', 'NSE_FO', 'NSE_FUT'])
+        futstk_mask = df[instrument_col].astype(str).str.upper().isin(['FUTSTK', 'FUTIDX'])
+        expiry_mask = df[expiry_col].notnull()
         
-        if inst_col and inst_col in df.columns:
-            logger.info(f"Found instrument type column: {inst_col}")
+        fno_fut = df[nse_mask & futstk_mask & expiry_mask]
+        logger.info(f"Found {len(fno_fut)} F&O futures with NSE exchange and valid expiry")
+        
+        if len(fno_fut) == 0:
+            logger.error("No active F&O futures found. Check if CSV contains ExchangeSegment=2 data")
+            return pd.DataFrame()
+        
+        # Step 2: Keep only current month futures (avoid expired / too far contracts)
+        logger.info("Filtering for current month futures...")
+        try:
+            fno_fut[expiry_col] = pd.to_datetime(fno_fut[expiry_col], errors='coerce')
+            today = pd.Timestamp.now()
+            current_month = today.month
+            current_year = today.year
             
-            # Show unique instrument types available
-            unique_types = df[inst_col].value_counts()
-            logger.info(f"Available instrument types: {unique_types.to_dict()}")
+            active_futures = fno_fut[
+                (fno_fut[expiry_col].dt.month == current_month) & 
+                (fno_fut[expiry_col].dt.year == current_year)
+            ]
+            logger.info(f"Filtered {len(active_futures)} active F&O futures for current month ({current_month}/{current_year})")
             
-            # Look for FUTSTK (stock futures) specifically
-            futstk_mask = df[inst_col].astype(str).str.upper() == "FUTSTK"
-            fut_df = df[futstk_mask].copy()
-            logger.info(f"Found {len(fut_df)} FUTSTK instruments")
-            
-            # If no FUTSTK found, try broader FUT* pattern
-            if len(fut_df) == 0:
-                fut_mask = df[inst_col].astype(str).str.upper().str.contains("FUT", na=False)
-                fut_df = df[fut_mask].copy()
-                logger.info(f"Found {len(fut_df)} instruments with FUT* pattern")
-                
-        else:
-            # Fallback: Filter by segment containing FUT
-            seg_col = colmap.get('segment')
-            
-            if seg_col and seg_col in df.columns:
-                logger.info(f"Filtering by segment column: {seg_col}")
-                # Show unique segments available
-                unique_segments = df[seg_col].value_counts()
-                logger.info(f"Available segments: {unique_segments.to_dict()}")
-                
-                # Look for futures in segment
-                fut_mask = df[seg_col].astype(str).str.upper().str.contains("FUT", na=False)
-                fut_df = df[fut_mask].copy()
-                logger.info(f"Found {len(fut_df)} instruments with FUT in segment")
-            else:
-                # Final fallback: use expiry column presence
-                logger.info("No instrument type or segment column found, using expiry column")
-                if exp_col and exp_col in df.columns:
-                    fut_df = df[df[exp_col].notnull()].copy()
-                    logger.info(f"Found {len(fut_df)} instruments with expiry dates")
-                else:
-                    logger.warning("No instrument type, segment or expiry columns found")
-                    return pd.DataFrame()
+        except Exception as e:
+            logger.warning(f"Error filtering by expiry date: {e}")
+            # Fallback: use all futures
+            active_futures = fno_fut.copy()
+            logger.info(f"Using all {len(active_futures)} F&O futures (expiry filtering failed)")
         
-        # Method 2: If we have INSTRUMENT_TYPE, filter specifically for FUTSTK
-        if inst_col and inst_col in fut_df.columns:
-            if len(fut_df) > 0:
-                # Check if we got FUTSTK specifically
-                futstk_only = fut_df[fut_df[inst_col].astype(str).str.upper() == "FUTSTK"].copy()
-                if len(futstk_only) > 0:
-                    logger.info(f"Using {len(futstk_only)} FUTSTK instruments")
-                    futstk_df = futstk_only
-                else:
-                    # If no FUTSTK, filter out currencies and commodities from FUT* results
-                    logger.info("No FUTSTK found, filtering FUT* instruments")
-                    sym_col = colmap.get('symbol')
-                    if sym_col and sym_col in fut_df.columns:
-                        # Check what types of futures we have
-                        sample_symbols = fut_df[sym_col].head(10).tolist()
-                        logger.info(f"Sample FUT symbols: {sample_symbols}")
-                        
-                        # Filter out currencies (FUTCUR pattern) and commodities
-                        exclude_patterns = [
-                            'USD', 'EUR', 'GBP', 'JPY', 'INR', 'USDINR', 'EURINR', 'GBPINR', 'JPYINR',  # Currencies
-                            'GOLD', 'SILVER', 'CRUDE', 'COPPER', 'ZINC', 'NICKEL', 'ALUMINIUM',  # Commodities
-                            'COTTON', 'NATURALGAS', 'MENTHAOIL'  # Other commodities
-                        ]
-                        
-                        # Also check if INSTRUMENT_TYPE contains FUTCUR to exclude currencies
-                        if 'FUTCUR' in fut_df[inst_col].values:
-                            fut_df = fut_df[fut_df[inst_col].astype(str).str.upper() != "FUTCUR"].copy()
-                            logger.info(f"After excluding FUTCUR: {len(fut_df)} instruments")
-                        
-                        pattern_str = '|'.join(exclude_patterns)
-                        exclude_mask = fut_df[sym_col].astype(str).str.upper().str.contains(pattern_str, na=False)
-                        futstk_df = fut_df[~exclude_mask].copy()
-                        logger.info(f"After excluding currencies/commodities: {len(futstk_df)} potential stock futures")
-                    else:
-                        futstk_df = fut_df.copy()
-                        logger.warning("No symbol column found for filtering")
-            else:
-                futstk_df = fut_df.copy()
-        else:
-            # Fallback filtering for non-stock instruments
-            sym_col = colmap.get('symbol')
-            if sym_col and sym_col in fut_df.columns:
-                logger.info(f"Filtering out non-stock instruments using symbol column: {sym_col}")
-                # Exclude index futures, currency futures, commodity futures
-                exclude_patterns = [
-                    'INDEX', 'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX',  # Indices
-                    'USD', 'EUR', 'GBP', 'JPY', 'USDINR', 'EURINR', 'GBPINR', 'JPYINR',  # Currencies
-                    'GOLD', 'SILVER', 'CRUDE', 'COPPER', 'ZINC', 'NICKEL', 'ALUMINIUM',  # Commodities
-                    'COTTON', 'NATURALGAS', 'MENTHAOIL'  # Other commodities
-                ]
-                
-                pattern_str = '|'.join(exclude_patterns)
-                exclude_mask = fut_df[sym_col].astype(str).str.upper().str.contains(pattern_str, na=False)
-                futstk_df = fut_df[~exclude_mask].copy()
-                logger.info(f"After excluding indices/currencies/commodities: {len(futstk_df)} FUTSTK instruments")
-            else:
-                futstk_df = fut_df.copy()
-                logger.warning("No symbol column found for filtering, keeping all futures")
-        
-        # Method 3: Select nearest expiry for each underlying  
-        sym_col = colmap.get('symbol')  # Ensure sym_col is defined for Method 3
-        if exp_col and exp_col in futstk_df.columns and sym_col and sym_col in futstk_df.columns:
-            logger.info("Selecting nearest expiry for each underlying stock")
-            try:
-                futstk_df[exp_col] = pd.to_datetime(futstk_df[exp_col], errors='coerce')
-                today = pd.Timestamp.now().normalize()
-                
-                # Only keep futures that haven't expired
-                futstk_df = futstk_df[futstk_df[exp_col] >= today]
-                
-                # Group by underlying symbol (remove expiry suffix to group)
-                def get_underlying(symbol):
-                    """Extract underlying symbol by removing expiry suffix"""
-                    symbol_str = str(symbol).upper()
-                    # Remove common date patterns and month codes
-                    import re
-                    # Remove patterns like 25JAN, 25FEB, 2025, etc.
-                    clean = re.sub(r'\d{2}[A-Z]{3}|\d{4}|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC', '', symbol_str)
-                    # Remove trailing numbers
-                    clean = re.sub(r'\d+$', '', clean).strip()
-                    return clean
-                
-                futstk_df['underlying'] = futstk_df[sym_col].apply(get_underlying)
-                
-                # Select nearest expiry for each underlying
-                futstk_df = futstk_df.sort_values(exp_col).groupby('underlying').first().reset_index(drop=True)
-                logger.info(f"After selecting nearest expiry: {len(futstk_df)} unique FUTSTK contracts")
-                
-            except Exception as e:
-                logger.warning(f"Error processing expiry dates: {e}")
-        
-        # Final validation - ensure we have required columns
-        if not futstk_df.empty:
-            sid_col = colmap.get('sid')
-            if sid_col and sid_col in futstk_df.columns:
-                # Remove any rows with missing security IDs
-                futstk_df = futstk_df[futstk_df[sid_col].notnull()].copy()
-                logger.info(f"Final FUTSTK result: {len(futstk_df)} instruments")
-                
-                if len(futstk_df) > 0:
-                    # Log sample of selected instruments (use safe symbol column reference)
-                    sample_symbols = futstk_df[sym_col].head(10).tolist() if sym_col and sym_col in futstk_df.columns else []
-                    logger.info(f"Sample FUTSTK symbols: {sample_symbols}")
-                    return futstk_df
+        if len(active_futures) == 0:
+            logger.warning(f"No futures found for current month {current_month}/{current_year}")
+            # Fallback: Get next month futures
+            next_month = (current_month % 12) + 1
+            next_year = current_year if next_month > current_month else current_year + 1
             
-        logger.error("No FUTSTK instruments found in instrument master")
-        return pd.DataFrame()
+            active_futures = fno_fut[
+                (fno_fut[expiry_col].dt.month == next_month) & 
+                (fno_fut[expiry_col].dt.year == next_year)
+            ]
+            logger.info(f"Fallback: Using {len(active_futures)} futures for next month ({next_month}/{next_year})")
+        
+        # Step 3: Show breakdown by instrument type and add required columns for extraction
+        if len(active_futures) > 0:
+            type_breakdown = active_futures[instrument_col].value_counts()
+            logger.info(f"Active futures breakdown: {type_breakdown.to_dict()}")
+            
+            # Show sample symbols
+            sample_symbols = active_futures[symbol_col].head(10).tolist()
+            logger.info(f"Sample active futures: {sample_symbols}")
+            
+            # Add standard column mappings for securities extraction
+            active_futures = active_futures.copy()
+            active_futures['SecurityId'] = active_futures[sid_col]
+            active_futures['TradingSymbol'] = active_futures[symbol_col] 
+            active_futures['ExchangeSegment'] = 2  # NSE Futures = 2
+            active_futures['InstrumentType'] = active_futures[instrument_col]
+        
+        return active_futures
     
     async def get_historical_data(self, security_id: str, days: int = 60) -> pd.DataFrame:
         """Fetch historical daily data for a security using SDK or REST API"""
@@ -289,11 +201,11 @@ class DhanHistoricalFetcher:
                 
                 def sdk_call():
                     try:
-                        # SDK call for historical daily data - use correct parameters for FUTSTK
+                        # SDK call for historical daily data - use extracted parameters
                         result = self.sdk.historical_daily_data(
                             securityId=int(security_id),  # Must be numeric
-                            exchangeSegment=2,            # NSE Futures = 2 (not string)
-                            instrumentType="FUTSTK",      # Stock futures (not generic "FUTURE")
+                            exchangeSegment=2,            # NSE Futures = 2 (consistent)
+                            instrumentType="FUTSTK",      # Use FUTSTK for stock futures or FUTIDX for index futures
                             fromDate=from_date.strftime("%Y-%m-%d"),
                             toDate=to_date.strftime("%Y-%m-%d")
                         )
@@ -343,7 +255,7 @@ class DhanHistoricalFetcher:
         payload = {
             "securityId": int(security_id),  # Must be numeric
             "exchangeSegment": 2,            # NSE Futures = 2 
-            "instrument": "FUTSTK",          # Stock futures
+            "instrument": "FUTSTK",          # Use consistent FUTSTK for stock futures
             "fromDate": from_date.strftime("%Y-%m-%d"),
             "toDate": to_date.strftime("%Y-%m-%d")
         }
@@ -498,45 +410,40 @@ async def fetch_and_analyze_historical_data():
                 emit_progress('error', 'Failed to fetch instruments from Dhan API')
                 return {}
             
-            emit_progress('filtering', f'Filtering F&O instruments from {len(instruments_df)} total instruments...')
-            fno_df = fetcher.get_futstk_instruments(instruments_df)
+            emit_progress('filtering', f'Filtering active F&O futures from {len(instruments_df)} total instruments...')
+            fno_df = fetcher.get_active_fno_futures(instruments_df)
             
             if fno_df.empty:
-                emit_progress('error', 'No F&O instruments found in instrument master')
+                emit_progress('error', 'No active F&O futures found in instrument master')
                 return {}
             
-            # Prepare securities list (limit to first 15 for stability)
+            # Prepare securities list using standard CSV columns (limit to first 15 for stability)
             securities = []
             
-            # Define column mappings for FUTSTK data extraction
-            def find_col(*candidates):
-                for c in candidates:
-                    if c in fno_df.columns:
-                        return c
-                return None
-            
-            sid_col = find_col('SECURITY_ID','securityId','SEM_SMST_SECURITY_ID','SCRIP_CODE','SECURITYID')
-            sym_col = find_col('SYMBOL_NAME','tradingSymbol','SEM_SMST_SECURITY_SYMBOL','symbolName','InstrumentName','SYMBOL')
-            underlying_col = find_col('UNDERLYING_SYMBOL','underlying','underlyingSymbol')
-            
-            logger.info(f"Using columns: sid={sid_col}, symbol={sym_col}, underlying={underlying_col}")
+            logger.info(f"Building securities from {len(fno_df)} active F&O futures...")
             
             for _, row in fno_df.head(15).iterrows():
-                if sid_col and sym_col and sid_col in row.index and sym_col in row.index:
-                    security_id = str(row[sid_col])
-                    symbol = str(row[sym_col])
-                    underlying = str(row[underlying_col]) if underlying_col and underlying_col in row.index else symbol
+                try:
+                    # Extract required fields from standard CSV format
+                    security_id = int(row['SecurityId'])
+                    trading_symbol = str(row['TradingSymbol'])
+                    exchange_segment = int(row['ExchangeSegment'])
+                    instrument_type = str(row['InstrumentType'])
                     
                     # Debug: Show what we're extracting
-                    logger.info(f"Extracted: securityId={security_id}, symbol={symbol}, underlying={underlying}")
+                    logger.info(f"Extracted: securityId={security_id}, symbol={trading_symbol}, segment={exchange_segment}, type={instrument_type}")
                     
                     securities.append({
-                        'security_id': security_id,
-                        'symbol': underlying,  # Use underlying symbol for display (NYKAA vs NYKAFUT)
-                        'trading_symbol': symbol  # Keep trading symbol for reference
+                        'security_id': str(security_id),  # Keep as string for consistency 
+                        'symbol': trading_symbol,         # Use trading symbol for display
+                        'exchange_segment': exchange_segment,
+                        'instrument_type': instrument_type
                     })
-                else:
-                    logger.warning(f"Missing required columns in row: {list(row.index)}")
+                    
+                except Exception as e:
+                    logger.warning(f"Error extracting security data from row: {e}")
+                    logger.warning(f"Available columns: {list(row.index)}")
+                    continue
             
             total_securities = len(securities)
             emit_progress('prepared', f'Prepared {total_securities} F&O securities for analysis', 0, total_securities)
