@@ -226,7 +226,8 @@ class DhanHistoricalFetcher:
                 futstk_df = fut_df.copy()
                 logger.warning("No symbol column found for filtering, keeping all futures")
         
-        # Method 3: Select nearest expiry for each underlying
+        # Method 3: Select nearest expiry for each underlying  
+        sym_col = colmap.get('symbol')  # Ensure sym_col is defined for Method 3
         if exp_col and exp_col in futstk_df.columns and sym_col and sym_col in futstk_df.columns:
             logger.info("Selecting nearest expiry for each underlying stock")
             try:
@@ -266,8 +267,8 @@ class DhanHistoricalFetcher:
                 logger.info(f"Final FUTSTK result: {len(futstk_df)} instruments")
                 
                 if len(futstk_df) > 0:
-                    # Log sample of selected instruments
-                    sample_symbols = futstk_df[sym_col].head(10).tolist() if sym_col in futstk_df.columns else []
+                    # Log sample of selected instruments (use safe symbol column reference)
+                    sample_symbols = futstk_df[sym_col].head(10).tolist() if sym_col and sym_col in futstk_df.columns else []
                     logger.info(f"Sample FUTSTK symbols: {sample_symbols}")
                     return futstk_df
             
