@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Optional dhanhq SDK import
 try:
-    from dhanhq import DhanContext, dhanhq
+    from dhanhq import dhanhq
     HAS_DHAN_SDK = True
     logger.info("dhanhq SDK available")
 except ImportError:
@@ -59,8 +59,8 @@ class DhanHistoricalFetcher:
         # Initialize SDK if available
         if self.use_sdk:
             try:
-                ctx = DhanContext(client_id, access_token)
-                self.sdk = dhanhq(ctx)
+                # Use direct dhanhq initialization (as per working sample)
+                self.sdk = dhanhq(client_id, access_token)
                 logger.info("Initialized dhanhq SDK for historical data")
             except Exception as e:
                 logger.warning(f"Failed to initialize dhanhq SDK: {e}, falling back to REST API")
@@ -307,35 +307,49 @@ class DhanHistoricalFetcher:
         if self.use_sdk and hasattr(self, 'sdk'):
             try:
                 logger.info(f"🔄 Using dhanhq SDK for {underlying_symbol}")
-                result = self.sdk.historical_daily_data(
-                    securityId=str(security_id),
-                    exchangeSegment=exchange_segment,
-                    instrumentType=instrument_type,
-                    fromDate=from_date.strftime("%Y-%m-%d"),
-                    toDate=to_date.strftime("%Y-%m-%d")
+                
+                # Use correct SDK parameters (based on working sample)
+                sdk_exchange_segment = "NSE_INDEX" if is_index else "NSE_EQ"
+                
+                response = self.sdk.historical_daily_data(
+                    symbol=underlying_symbol,  # Use symbol, not securityId
+                    exchange_segment=sdk_exchange_segment,  # String, not numeric
+                    instrument_type=instrument_type,
+                    from_date=from_date.strftime("%Y-%m-%d"),  # from_date, not fromDate
+                    to_date=to_date.strftime("%Y-%m-%d")       # to_date, not toDate
                 )
                 
-                if result and hasattr(result, 'data') and result.data:
-                    candles = result.data
-                    logger.info(f"✅ {underlying_symbol}: Got {len(candles)} candles via SDK")
-                    
-                    # Convert SDK result to DataFrame
-                    df_data = []
-                    for candle in candles:
-                        df_data.append({
-                            'date': pd.to_datetime(candle.get('timestamp', candle.get('date'))),
-                            'open': float(candle.get('open', 0)),
-                            'high': float(candle.get('high', 0)), 
-                            'low': float(candle.get('low', 0)),
-                            'close': float(candle.get('close', 0)),
-                            'volume': float(candle.get('volume', 0))
-                        })
-                    
-                    df = pd.DataFrame(df_data)
-                    df = df.sort_values('date').reset_index(drop=True)
-                    return df
+                logger.info(f"🔍 SDK Response for {underlying_symbol}: {response}")
+                
+                if response and response.get('status') == 'success':
+                    candles = response.get('data', [])
+                    if candles:
+                        logger.info(f"✅ {underlying_symbol}: Got {len(candles)} candles via SDK")
+                        
+                        # Convert SDK result to DataFrame (using correct field names)
+                        df_data = []
+                        for candle in candles:
+                            # SDK returns start_Time timestamp, convert to date
+                            timestamp = candle.get('start_Time', 0)
+                            candle_date = datetime.fromtimestamp(timestamp) if timestamp else datetime.now()
+                            
+                            df_data.append({
+                                'date': candle_date,
+                                'open': float(candle.get('open', 0)),
+                                'high': float(candle.get('high', 0)), 
+                                'low': float(candle.get('low', 0)),
+                                'close': float(candle.get('close', 0)),
+                                'volume': float(candle.get('volume', 0))
+                            })
+                        
+                        df = pd.DataFrame(df_data)
+                        df = df.sort_values('date').reset_index(drop=True)
+                        return df
+                    else:
+                        logger.warning(f"⚠️ {underlying_symbol}: SDK returned empty data array")
+                        return pd.DataFrame()
                 else:
-                    logger.warning(f"⚠️ {underlying_symbol}: SDK returned no data")
+                    logger.warning(f"⚠️ {underlying_symbol}: SDK returned error: {response}")
                     return pd.DataFrame()
                     
             except Exception as e:
