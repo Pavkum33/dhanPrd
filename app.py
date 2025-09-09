@@ -8,18 +8,245 @@ import os
 import json
 import sqlite3
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import threading
 import time
-from historical_fetcher import fetch_and_analyze_historical_data
+import logging
+import aiohttp
+import pandas as pd
+from typing import Dict, List, Optional
+import math
+from collections import deque
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Historical Data Fetcher Classes
+class DhanHistoricalFetcher:
+    """Fetches historical data from Dhan REST API"""
+    
+    def __init__(self, client_id: str, access_token: str):
+        self.client_id = client_id
+        self.access_token = access_token
+        self.base_url = "https://api.dhan.co"
+        self.headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'access-token': access_token
+        }
+        self.session = None
+    
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession(headers=self.headers)
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+    
+    async def get_instruments(self) -> pd.DataFrame:
+        """Fetch instrument master from Dhan"""
+        url = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv"
+        try:
+            async with self.session.get(url) as response:
+                if response.status == 200:
+                    content = await response.text()
+                    from io import StringIO
+                    df = pd.read_csv(StringIO(content))
+                    df.columns = [c.strip() for c in df.columns]
+                    logger.info(f"Fetched {len(df)} instruments")
+                    return df
+                else:
+                    logger.error(f"Failed to fetch instruments: {response.status}")
+                    return pd.DataFrame()
+        except Exception as e:
+            logger.exception(f"Error fetching instruments: {e}")
+            return pd.DataFrame()
+    
+    def get_fno_instruments(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Filter F&O instruments"""
+        seg_col = None
+        for col in df.columns:
+            if 'segment' in col.lower():
+                seg_col = col
+                break
+        
+        if seg_col:
+            fno_df = df[df[seg_col].astype(str).str.contains('FUT', na=False)].copy()
+        else:
+            exp_cols = [col for col in df.columns if 'expiry' in col.lower()]
+            if exp_cols:
+                fno_df = df[df[exp_cols[0]].notnull()].copy()
+            else:
+                fno_df = df.head(20).copy()  # Fallback to first 20
+        
+        logger.info(f"Found {len(fno_df)} F&O instruments")
+        return fno_df
+    
+    async def get_historical_data(self, security_id: str, days: int = 60) -> pd.DataFrame:
+        """Fetch historical daily data for a security"""
+        to_date = datetime.now().date()
+        from_date = to_date - timedelta(days=days + 5)
+        
+        url = f"{self.base_url}/charts/historical"
+        payload = {
+            "securityId": security_id,
+            "exchangeSegment": "NSE",
+            "instrument": "FUTURE",
+            "fromDate": from_date.strftime("%Y-%m-%d"),
+            "toDate": to_date.strftime("%Y-%m-%d")
+        }
+        
+        try:
+            async with self.session.post(url, json=payload) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if 'data' in data and data['data']:
+                        df = pd.DataFrame(data['data'])
+                        if 'timestamp' in df.columns:
+                            df['date'] = pd.to_datetime(df['timestamp'])
+                        elif 'date' in df.columns:
+                            df['date'] = pd.to_datetime(df['date'])
+                        
+                        required_cols = ['open', 'high', 'low', 'close', 'volume']
+                        for col in required_cols:
+                            if col not in df.columns:
+                                df[col] = 0
+                        
+                        df = df.sort_values('date').reset_index(drop=True)
+                        return df[['date', 'open', 'high', 'low', 'close', 'volume']]
+                return pd.DataFrame()
+        except Exception as e:
+            logger.exception(f"Error fetching data for {security_id}: {e}")
+            return pd.DataFrame()
+
+class BreakoutAnalyzer:
+    """Analyzes historical data for breakout patterns"""
+    
+    def __init__(self, lookback: int = 50, ema_short: int = 8, ema_long: int = 13):
+        self.lookback = lookback
+        self.ema_short = ema_short
+        self.ema_long = ema_long
+    
+    def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate technical indicators for breakout analysis"""
+        if df.empty or len(df) < self.lookback:
+            return df
+        
+        df = df.copy()
+        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3.0
+        df['resistance'] = df['typical_price'].rolling(window=self.lookback).max()
+        df['ema_short'] = df['close'].ewm(span=self.ema_short).mean()
+        df['ema_long'] = df['close'].ewm(span=self.ema_long).mean()
+        df['breakout'] = (df['close'] > df['resistance']) & (df['ema_short'] > df['ema_long'])
+        df['volume_avg'] = df['volume'].rolling(window=20).mean()
+        df['volume_spike'] = df['volume'] > (df['volume_avg'] * 1.5)
+        df['signal'] = df['breakout'] & df['volume_spike'] & (df['close'] > df['open'])
+        return df
+    
+    def get_current_analysis(self, df: pd.DataFrame) -> Dict:
+        """Get current analysis for latest data point"""
+        if df.empty:
+            return {}
+        
+        latest = df.iloc[-1]
+        prev_day = df.iloc[-2] if len(df) > 1 else latest
+        
+        return {
+            'symbol': '',
+            'date': latest.get('date', ''),
+            'close': float(latest.get('close', 0)),
+            'resistance': float(latest.get('resistance', 0)),
+            'ema_short': float(latest.get('ema_short', 0)),
+            'ema_long': float(latest.get('ema_long', 0)),
+            'volume': int(latest.get('volume', 0)),
+            'prev_day_volume': int(prev_day.get('volume', 0)),
+            'breakout_signal': bool(latest.get('signal', False)),
+            'change_pct': ((latest.get('close', 0) - prev_day.get('close', 1)) / prev_day.get('close', 1)) * 100
+        }
+
+async def fetch_and_analyze_historical_data():
+    """Main function to fetch and analyze historical data"""
+    client_id = os.getenv('DHAN_CLIENT_ID')
+    access_token = os.getenv('DHAN_ACCESS_TOKEN')
+    
+    if not client_id or not access_token:
+        logger.error("Dhan credentials not found in environment variables")
+        return {}
+    
+    logger.info("Starting historical data fetch...")
+    
+    async with DhanHistoricalFetcher(client_id, access_token) as fetcher:
+        instruments_df = await fetcher.get_instruments()
+        if instruments_df.empty:
+            logger.error("Failed to fetch instruments")
+            return {}
+        
+        fno_df = fetcher.get_fno_instruments(instruments_df)
+        
+        # Prepare securities list (limit to first 15 for stability)
+        securities = []
+        for _, row in fno_df.head(15).iterrows():
+            security_id = None
+            symbol = None
+            
+            for col in row.index:
+                if 'security' in col.lower() and 'id' in col.lower():
+                    security_id = str(row[col])
+                    break
+            
+            for col in row.index:
+                if any(x in col.lower() for x in ['symbol', 'name', 'trading']):
+                    symbol = str(row[col])
+                    break
+            
+            if security_id and symbol:
+                securities.append({
+                    'security_id': security_id,
+                    'symbol': symbol
+                })
+        
+        logger.info(f"Fetching historical data for {len(securities)} securities...")
+        
+        # Fetch historical data with rate limiting
+        analyzed_data = {}
+        analyzer = BreakoutAnalyzer()
+        
+        for i, sec_info in enumerate(securities):
+            try:
+                await asyncio.sleep(0.2)  # Rate limiting
+                df = await fetcher.get_historical_data(sec_info['security_id'])
+                
+                if not df.empty:
+                    analyzed_df = analyzer.calculate_technical_indicators(df)
+                    current_analysis = analyzer.get_current_analysis(analyzed_df)
+                    current_analysis['symbol'] = sec_info['symbol']
+                    current_analysis['security_id'] = sec_info['security_id']
+                    
+                    analyzed_data[sec_info['security_id']] = {
+                        'symbol': sec_info['symbol'],
+                        'historical_data': analyzed_df,
+                        'current_analysis': current_analysis
+                    }
+                    
+                    logger.info(f"Analyzed {sec_info['symbol']}: "
+                               f"Close={current_analysis['close']:.2f}, "
+                               f"Signal={current_analysis['breakout_signal']}")
+                
+            except Exception as e:
+                logger.exception(f"Error processing {sec_info['symbol']}: {e}")
+        
+        logger.info(f"Historical analysis completed for {len(analyzed_data)} securities")
+        return analyzed_data
 
 # Global state
 scanner_state = {
