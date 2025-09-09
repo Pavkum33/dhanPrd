@@ -298,7 +298,8 @@ def run_scanner_background():
     except Exception as e:
         print(f"Scanner error: {e}", file=sys.stderr)
 
-if __name__ == '__main__':
+def init_app():
+    """Initialize the application"""
     # Initialize database
     init_db()
     
@@ -313,10 +314,16 @@ if __name__ == '__main__':
         time.sleep(2)  # Give scanner time to initialize
     else:
         print("Running in demo mode - add DHAN credentials for live scanning")
-    
-    # Get port from Railway environment
+
+# Initialize when module loads
+init_app()
+
+if __name__ == '__main__':
+    # Get port from environment
     port = int(os.getenv('PORT', 5000))
     host = '0.0.0.0'  # Railway requires binding to 0.0.0.0
     
     print(f"Starting F&O Scanner Dashboard on {host}:{port}")
-    socketio.run(app, host=host, port=port, debug=False)
+    
+    # Use allow_unsafe_werkzeug for development/Railway
+    socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
