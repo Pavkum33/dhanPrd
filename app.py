@@ -279,12 +279,9 @@ class DhanHistoricalFetcher:
             return "NSE_EQ", "EQUITY"
 
     async def get_historical_data_for_underlying(self, underlying_symbol: str, security_id: int, days: int = 60, interval: str = "1d") -> pd.DataFrame:
-        """Fetch historical data using correct Dhan API parameters
+        """Fetch historical data using dhanhq SDK (preferred) or REST API fallback
         
-        Fixed implementation:
-        - Uses only securityId (not symbolName)
-        - Correct numeric exchangeSegment: 1=NSE_EQ, 12=NSE_INDEX
-        - Proper interval format: "1day" not "1d"
+        The /v2/chart/history REST endpoint returns 404, so we use SDK when available
         """
         to_date = datetime.now().date()
         from_date = to_date - timedelta(days=days + 5)
@@ -298,64 +295,106 @@ class DhanHistoricalFetcher:
         is_index = underlying_symbol.upper().strip() in index_symbols
         
         if is_index:
-            exchange_segment = 12  # NSE_INDEX
+            exchange_segment = 12  # NSE_INDEX 
             instrument_type = "INDEX"
         else:
             exchange_segment = 1   # NSE_EQ
             instrument_type = "EQUITY"
         
-        # Correct API parameters
+        logger.info(f"📈 Fetching {underlying_symbol} historical data (securityId={security_id}, segment={exchange_segment}, type={instrument_type})")
+        
+        # Try SDK first if available
+        if self.use_sdk and hasattr(self, 'sdk'):
+            try:
+                logger.info(f"🔄 Using dhanhq SDK for {underlying_symbol}")
+                result = self.sdk.historical_daily_data(
+                    securityId=str(security_id),
+                    exchangeSegment=exchange_segment,
+                    instrumentType=instrument_type,
+                    fromDate=from_date.strftime("%Y-%m-%d"),
+                    toDate=to_date.strftime("%Y-%m-%d")
+                )
+                
+                if result and hasattr(result, 'data') and result.data:
+                    candles = result.data
+                    logger.info(f"✅ {underlying_symbol}: Got {len(candles)} candles via SDK")
+                    
+                    # Convert SDK result to DataFrame
+                    df_data = []
+                    for candle in candles:
+                        df_data.append({
+                            'date': pd.to_datetime(candle.get('timestamp', candle.get('date'))),
+                            'open': float(candle.get('open', 0)),
+                            'high': float(candle.get('high', 0)), 
+                            'low': float(candle.get('low', 0)),
+                            'close': float(candle.get('close', 0)),
+                            'volume': float(candle.get('volume', 0))
+                        })
+                    
+                    df = pd.DataFrame(df_data)
+                    df = df.sort_values('date').reset_index(drop=True)
+                    return df
+                else:
+                    logger.warning(f"⚠️ {underlying_symbol}: SDK returned no data")
+                    return pd.DataFrame()
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ {underlying_symbol}: SDK error: {e}, trying alternative endpoints")
+        
+        # SDK failed or not available - try alternative REST endpoints
+        alternative_endpoints = [
+            f"{self.base_url}/charts/historical",
+            f"{self.base_url}/v2/charts/historical", 
+            f"{self.base_url}/historical-data",
+            f"{self.base_url}/v1/chart/history"
+        ]
+        
         params = {
             "securityId": str(security_id),
-            "exchangeSegment": exchange_segment,  # Numeric, not string
+            "exchangeSegment": exchange_segment,
             "instrumentType": instrument_type,
-            "interval": "1day",  # Correct format
+            "interval": "1day",
             "fromDate": from_date.strftime("%Y-%m-%d"),
             "toDate": to_date.strftime("%Y-%m-%d")
         }
         
-        url = f"{self.base_url}/v2/chart/history"
-        logger.info(f"📈 Fetching {underlying_symbol} historical data (securityId={security_id}, segment={exchange_segment}, type={instrument_type})")
-        logger.info(f"🔍 API Request: {url} with params: {params}")
-        
-        try:
-            async with self.session.get(url, params=params) as response:
-                response_text = await response.text()
-                logger.info(f"🔍 API Response for {underlying_symbol}: Status={response.status}, Body={response_text[:500]}")
-                
-                if response.status == 200:
-                    data = await response.json()
-                    candles = data.get('data', [])
-                    
-                    if candles:
-                        logger.info(f"✅ {underlying_symbol}: Got {len(candles)} candles")
+        for endpoint in alternative_endpoints:
+            try:
+                logger.info(f"🔍 Trying {underlying_symbol} via {endpoint}")
+                async with self.session.get(endpoint, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        candles = data.get('data', [])
                         
-                        # Convert to DataFrame
-                        df = pd.DataFrame(candles)
-                        
-                        # Normalize date column
-                        if 'timestamp' in df.columns:
-                            df['date'] = pd.to_datetime(df['timestamp'])
-                        elif 'date' in df.columns:
-                            df['date'] = pd.to_datetime(df['date'])
-                        
-                        # Ensure required columns exist
-                        required_cols = ['open', 'high', 'low', 'close', 'volume']
-                        for col in required_cols:
-                            if col not in df.columns:
-                                df[col] = 0
-                        
-                        df = df.sort_values('date').reset_index(drop=True)
-                        return df[['date', 'open', 'high', 'low', 'close', 'volume']]
+                        if candles:
+                            logger.info(f"✅ {underlying_symbol}: Got {len(candles)} candles from {endpoint}")
+                            
+                            # Convert to DataFrame
+                            df = pd.DataFrame(candles)
+                            
+                            # Normalize date column
+                            if 'timestamp' in df.columns:
+                                df['date'] = pd.to_datetime(df['timestamp'])
+                            elif 'date' in df.columns:
+                                df['date'] = pd.to_datetime(df['date'])
+                            
+                            # Ensure required columns exist
+                            required_cols = ['open', 'high', 'low', 'close', 'volume']
+                            for col in required_cols:
+                                if col not in df.columns:
+                                    df[col] = 0
+                            
+                            df = df.sort_values('date').reset_index(drop=True)
+                            return df[['date', 'open', 'high', 'low', 'close', 'volume']]
                     else:
-                        logger.warning(f"⚠️ {underlying_symbol}: API returned empty data array. Response: {data}")
-                        return pd.DataFrame()
-                else:
-                    logger.error(f"❌ {underlying_symbol}: HTTP {response.status} - Response: {response_text}")
-                    return pd.DataFrame()
-        except Exception as e:
-            logger.exception(f"❌ {underlying_symbol}: Exception during API call: {e}")
-            return pd.DataFrame()
+                        logger.debug(f"❌ {endpoint}: HTTP {response.status}")
+                        
+            except Exception as e:
+                logger.debug(f"❌ {endpoint}: Exception {e}")
+                continue
+        
+        logger.error(f"❌ {underlying_symbol}: All historical data endpoints failed")
+        return pd.DataFrame()
     
     def extract_underlying_symbol(self, future_symbol: str) -> str:
         """Extract underlying symbol from future contract name
