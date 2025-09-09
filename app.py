@@ -17,6 +17,7 @@ import time
 import logging
 import aiohttp
 import pandas as pd
+import numpy as np
 from typing import Dict, List, Optional
 import math
 from collections import deque
@@ -30,13 +31,23 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Optional dhanhq SDK import
+try:
+    from dhanhq import DhanContext, dhanhq
+    HAS_DHAN_SDK = True
+    logger.info("dhanhq SDK available")
+except ImportError:
+    HAS_DHAN_SDK = False
+    logger.warning("dhanhq SDK not available - using REST API fallback")
+
 # Historical Data Fetcher Classes
 class DhanHistoricalFetcher:
-    """Fetches historical data from Dhan REST API"""
+    """Fetches historical data using dhanhq SDK (preferred) or REST API (fallback)"""
     
-    def __init__(self, client_id: str, access_token: str):
+    def __init__(self, client_id: str, access_token: str, use_sdk: bool = HAS_DHAN_SDK):
         self.client_id = client_id
         self.access_token = access_token
+        self.use_sdk = use_sdk and HAS_DHAN_SDK
         self.base_url = "https://api.dhan.co"
         self.headers = {
             'Accept': 'application/json',
@@ -44,6 +55,16 @@ class DhanHistoricalFetcher:
             'access-token': access_token
         }
         self.session = None
+        
+        # Initialize SDK if available
+        if self.use_sdk:
+            try:
+                ctx = DhanContext(client_id, access_token)
+                self.sdk = dhanhq(ctx)
+                logger.info("Initialized dhanhq SDK for historical data")
+            except Exception as e:
+                logger.warning(f"Failed to initialize dhanhq SDK: {e}, falling back to REST API")
+                self.use_sdk = False
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(headers=self.headers)
@@ -72,83 +93,188 @@ class DhanHistoricalFetcher:
             logger.exception(f"Error fetching instruments: {e}")
             return pd.DataFrame()
     
-    def get_fno_instruments(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Filter F&O instruments with improved detection"""
+    def get_futstk_instruments(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Filter for FUTSTK (stock futures) only - excludes indices, currencies, commodities"""
+        logger.info(f"Filtering FUTSTK instruments from {len(df)} total instruments...")
         logger.info(f"Available columns: {list(df.columns)}")
         
-        # Try multiple approaches to find F&O instruments
-        fno_df = pd.DataFrame()
+        # Resolve column mappings
+        colmap = {}
+        cols = list(df.columns)
         
-        # Method 1: Look for segment column with FUT
-        seg_cols = [col for col in df.columns if any(x in col.lower() for x in ['segment', 'exch', 'market'])]
-        if seg_cols:
-            seg_col = seg_cols[0]
-            logger.info(f"Trying segment column: {seg_col}")
-            fno_df = df[df[seg_col].astype(str).str.contains('FUT|FUTURE|NSE_FO|BSE_FO', case=False, na=False)].copy()
-            if len(fno_df) > 0:
-                logger.info(f"Found {len(fno_df)} F&O instruments using segment filter")
-                return fno_df
+        def find_col(*candidates):
+            for c in candidates:
+                if c in cols:
+                    return c
+            return None
         
-        # Method 2: Look for expiry date column
-        exp_cols = [col for col in df.columns if any(x in col.lower() for x in ['expiry', 'expire', 'maturity'])]
-        if exp_cols:
-            exp_col = exp_cols[0]
-            logger.info(f"Trying expiry column: {exp_col}")
-            fno_df = df[df[exp_col].notnull()].copy()
-            if len(fno_df) > 0:
-                logger.info(f"Found {len(fno_df)} instruments with expiry dates")
-                return fno_df
+        colmap['sid'] = find_col('securityId','SEM_SMST_SECURITY_ID','SCRIP_CODE','SECURITYID','SECURITY_ID')
+        colmap['symbol'] = find_col('tradingSymbol','SEM_SMST_SECURITY_SYMBOL','symbolName','InstrumentName','SYMBOL')
+        colmap['segment'] = find_col('segment','SEM_SEGMENT','EXCHANGE','SEM_EXM_EXCH_ID')
+        colmap['expiry'] = find_col('EXPIRY_DATE','EXPIRY','SEM_EXPIRY_DATE')
+        colmap['instrument'] = find_col('instrumentType','SEM_INSTRUMENT_NAME','INSTRUMENT')
         
-        # Method 3: Look for instrument type column
-        inst_cols = [col for col in df.columns if any(x in col.lower() for x in ['instrument', 'type', 'product'])]
-        if inst_cols:
-            inst_col = inst_cols[0]
-            logger.info(f"Trying instrument column: {inst_col}")
-            fno_df = df[df[inst_col].astype(str).str.contains('FUT|FUTURE|OPTION|INDEX', case=False, na=False)].copy()
-            if len(fno_df) > 0:
-                logger.info(f"Found {len(fno_df)} F&O instruments using instrument type")
-                return fno_df
+        logger.info(f"Column mapping: {colmap}")
         
-        # Method 4: Look for symbol patterns (NIFTY, BANKNIFTY, etc.)
-        sym_cols = [col for col in df.columns if any(x in col.lower() for x in ['symbol', 'name', 'trading'])]
-        if sym_cols:
-            sym_col = sym_cols[0]
-            logger.info(f"Trying symbol pattern matching in: {sym_col}")
-            # Common F&O patterns
-            patterns = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX']
-            pattern_str = '|'.join(patterns)
-            fno_df = df[df[sym_col].astype(str).str.contains(pattern_str, case=False, na=False)].copy()
-            if len(fno_df) > 0:
-                logger.info(f"Found {len(fno_df)} instruments using symbol patterns")
-                return fno_df
+        # Method 1: Filter by segment containing FUT AND has expiry date
+        seg_col = colmap.get('segment')
+        exp_col = colmap.get('expiry')
         
-        # Method 5: Sample a few popular stocks that likely have F&O
-        if sym_cols:
-            sym_col = sym_cols[0]
-            logger.info(f"Trying popular F&O stocks in: {sym_col}")
-            popular_fno = ['RELIANCE', 'TCS', 'HDFC', 'INFY', 'ITC', 'SBIN', 'LT', 'HCLTECH', 'AXISBANK', 'MARUTI']
-            pattern_str = '|'.join(popular_fno)
-            fno_df = df[df[sym_col].astype(str).str.contains(pattern_str, case=False, na=False)].copy()
-            if len(fno_df) > 0:
-                logger.info(f"Found {len(fno_df)} popular F&O stocks")
-                return fno_df
+        if seg_col and seg_col in df.columns:
+            logger.info(f"Filtering by segment column: {seg_col}")
+            # Look for futures in segment
+            fut_mask = df[seg_col].astype(str).str.upper().str.contains("FUT", na=False)
+            fut_df = df[fut_mask].copy()
+            logger.info(f"Found {len(fut_df)} instruments with FUT in segment")
+            
+            # Ensure they have expiry dates (futures should have expiry)
+            if exp_col and exp_col in fut_df.columns:
+                fut_df = fut_df[fut_df[exp_col].notnull()].copy()
+                logger.info(f"Found {len(fut_df)} instruments with expiry dates")
+        else:
+            # Fallback: use expiry column presence
+            logger.info("No segment column found, using expiry column")
+            if exp_col and exp_col in df.columns:
+                fut_df = df[df[exp_col].notnull()].copy()
+                logger.info(f"Found {len(fut_df)} instruments with expiry dates")
+            else:
+                logger.warning("No segment or expiry columns found")
+                return pd.DataFrame()
         
-        # Method 6: Fallback - take a sample of instruments for testing
-        logger.warning("No F&O instruments found, taking sample for testing")
-        fno_df = df.sample(min(20, len(df))).copy() if len(df) > 0 else pd.DataFrame()
+        # Method 2: Filter out indices, currencies, commodities
+        sym_col = colmap.get('symbol')
+        if sym_col and sym_col in fut_df.columns:
+            logger.info(f"Filtering out non-stock instruments using symbol column: {sym_col}")
+            # Exclude index futures, currency futures, commodity futures
+            exclude_patterns = [
+                'INDEX', 'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX',  # Indices
+                'USD', 'EUR', 'GBP', 'JPY', 'USDINR', 'EURINR', 'GBPINR', 'JPYINR',  # Currencies
+                'GOLD', 'SILVER', 'CRUDE', 'COPPER', 'ZINC', 'NICKEL', 'ALUMINIUM',  # Commodities
+                'COTTON', 'NATURALGAS', 'MENTHAOIL'  # Other commodities
+            ]
+            
+            pattern_str = '|'.join(exclude_patterns)
+            exclude_mask = fut_df[sym_col].astype(str).str.upper().str.contains(pattern_str, na=False)
+            futstk_df = fut_df[~exclude_mask].copy()
+            logger.info(f"After excluding indices/currencies/commodities: {len(futstk_df)} FUTSTK instruments")
+        else:
+            futstk_df = fut_df.copy()
+            logger.warning("No symbol column found for filtering, keeping all futures")
         
-        logger.info(f"Final result: {len(fno_df)} instruments selected")
-        return fno_df
+        # Method 3: Select nearest expiry for each underlying
+        if exp_col and exp_col in futstk_df.columns and sym_col and sym_col in futstk_df.columns:
+            logger.info("Selecting nearest expiry for each underlying stock")
+            try:
+                futstk_df[exp_col] = pd.to_datetime(futstk_df[exp_col], errors='coerce')
+                today = pd.Timestamp.now().normalize()
+                
+                # Only keep futures that haven't expired
+                futstk_df = futstk_df[futstk_df[exp_col] >= today]
+                
+                # Group by underlying symbol (remove expiry suffix to group)
+                def get_underlying(symbol):
+                    """Extract underlying symbol by removing expiry suffix"""
+                    symbol_str = str(symbol).upper()
+                    # Remove common date patterns and month codes
+                    import re
+                    # Remove patterns like 25JAN, 25FEB, 2025, etc.
+                    clean = re.sub(r'\d{2}[A-Z]{3}|\d{4}|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC', '', symbol_str)
+                    # Remove trailing numbers
+                    clean = re.sub(r'\d+$', '', clean).strip()
+                    return clean
+                
+                futstk_df['underlying'] = futstk_df[sym_col].apply(get_underlying)
+                
+                # Select nearest expiry for each underlying
+                futstk_df = futstk_df.sort_values(exp_col).groupby('underlying').first().reset_index(drop=True)
+                logger.info(f"After selecting nearest expiry: {len(futstk_df)} unique FUTSTK contracts")
+                
+            except Exception as e:
+                logger.warning(f"Error processing expiry dates: {e}")
+        
+        # Final validation - ensure we have required columns
+        if not futstk_df.empty:
+            sid_col = colmap.get('sid')
+            if sid_col and sid_col in futstk_df.columns:
+                # Remove any rows with missing security IDs
+                futstk_df = futstk_df[futstk_df[sid_col].notnull()].copy()
+                logger.info(f"Final FUTSTK result: {len(futstk_df)} instruments")
+                
+                if len(futstk_df) > 0:
+                    # Log sample of selected instruments
+                    sample_symbols = futstk_df[sym_col].head(10).tolist() if sym_col in futstk_df.columns else []
+                    logger.info(f"Sample FUTSTK symbols: {sample_symbols}")
+                    return futstk_df
+            
+        logger.error("No FUTSTK instruments found in instrument master")
+        return pd.DataFrame()
     
     async def get_historical_data(self, security_id: str, days: int = 60) -> pd.DataFrame:
-        """Fetch historical daily data for a security"""
+        """Fetch historical daily data for a security using SDK or REST API"""
         to_date = datetime.now().date()
         from_date = to_date - timedelta(days=days + 5)
         
+        # Method 1: Try dhanhq SDK first (more reliable)
+        if self.use_sdk and hasattr(self, 'sdk'):
+            try:
+                loop = asyncio.get_running_loop()
+                
+                def sdk_call():
+                    try:
+                        # SDK call for historical daily data
+                        result = self.sdk.historical_daily_data(
+                            securityId=security_id,
+                            exchangeSegment="NSE_FUT", 
+                            instrumentType="FUTURE",
+                            fromDate=from_date.strftime("%Y-%m-%d"),
+                            toDate=to_date.strftime("%Y-%m-%d")
+                        )
+                        return result
+                    except Exception as e:
+                        logger.warning(f"SDK historical call failed for {security_id}: {e}")
+                        return {}
+                
+                # Execute SDK call in thread pool
+                result = await loop.run_in_executor(None, sdk_call)
+                
+                # Process SDK response
+                if result:
+                    data = result.get('data') or result.get('result') or []
+                    if isinstance(result, list):
+                        data = result
+                    
+                    if data:
+                        df = pd.DataFrame(data)
+                        
+                        # Normalize date column
+                        for date_col in ['timestamp', 'date', 'datetime']:
+                            if date_col in df.columns and 'date' not in df.columns:
+                                df['date'] = df[date_col]
+                                break
+                        
+                        # Ensure required columns exist
+                        required_cols = ['open', 'high', 'low', 'close', 'volume']
+                        for col in required_cols:
+                            if col not in df.columns:
+                                df[col] = 0
+                        
+                        if 'date' in df.columns:
+                            try:
+                                df['date'] = pd.to_datetime(df['date'])
+                                df = df.sort_values('date').reset_index(drop=True)
+                                logger.info(f"SDK: Fetched {len(df)} historical records for {security_id}")
+                                return df[['date', 'open', 'high', 'low', 'close', 'volume']]
+                            except Exception as e:
+                                logger.warning(f"Error processing SDK data for {security_id}: {e}")
+                
+            except Exception as e:
+                logger.warning(f"SDK historical fetch failed for {security_id}: {e}")
+        
+        # Method 2: Fallback to REST API
         url = f"{self.base_url}/charts/historical"
         payload = {
             "securityId": security_id,
-            "exchangeSegment": "NSE",
+            "exchangeSegment": "NSE_FUT",
             "instrument": "FUTURE",
             "fromDate": from_date.strftime("%Y-%m-%d"),
             "toDate": to_date.strftime("%Y-%m-%d")
@@ -160,6 +286,8 @@ class DhanHistoricalFetcher:
                     data = await response.json()
                     if 'data' in data and data['data']:
                         df = pd.DataFrame(data['data'])
+                        
+                        # Normalize date column
                         if 'timestamp' in df.columns:
                             df['date'] = pd.to_datetime(df['timestamp'])
                         elif 'date' in df.columns:
@@ -171,10 +299,14 @@ class DhanHistoricalFetcher:
                                 df[col] = 0
                         
                         df = df.sort_values('date').reset_index(drop=True)
+                        logger.info(f"REST: Fetched {len(df)} historical records for {security_id}")
                         return df[['date', 'open', 'high', 'low', 'close', 'volume']]
-                return pd.DataFrame()
+                else:
+                    logger.warning(f"REST API error {response.status} for {security_id}")
+                    
+            return pd.DataFrame()
         except Exception as e:
-            logger.exception(f"Error fetching data for {security_id}: {e}")
+            logger.exception(f"Error fetching historical data for {security_id}: {e}")
             return pd.DataFrame()
 
 class BreakoutAnalyzer:
@@ -185,42 +317,85 @@ class BreakoutAnalyzer:
         self.ema_short = ema_short
         self.ema_long = ema_long
     
-    def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate technical indicators for breakout analysis"""
+    def calculate_technical_indicators(self, df: pd.DataFrame, volume_factor: float = 0.5, price_threshold: float = 50) -> pd.DataFrame:
+        """Calculate technical indicators for Chartink-style breakout analysis"""
         if df.empty or len(df) < self.lookback:
             return df
         
         df = df.copy()
-        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3.0
-        df['resistance'] = df['typical_price'].rolling(window=self.lookback).max()
+        
+        # Calculate typical price (Open + High + Close) / 3 - Chartink style
+        df['typical_price'] = (df['open'] + df['high'] + df['close']) / 3.0
+        
+        # Resistance = ceil(max(typical price over lookback period)) - Chartink style
+        df['resistance'] = df['typical_price'].rolling(window=self.lookback).max().apply(lambda x: math.ceil(x) if pd.notna(x) else np.nan)
+        
+        # Calculate EMAs
         df['ema_short'] = df['close'].ewm(span=self.ema_short).mean()
         df['ema_long'] = df['close'].ewm(span=self.ema_long).mean()
-        df['breakout'] = (df['close'] > df['resistance']) & (df['ema_short'] > df['ema_long'])
-        df['volume_avg'] = df['volume'].rolling(window=20).mean()
-        df['volume_spike'] = df['volume'] > (df['volume_avg'] * 1.5)
-        df['signal'] = df['breakout'] & df['volume_spike'] & (df['close'] > df['open'])
+        
+        # Calculate previous day volume for volume check
+        df['prev_day_volume'] = df['volume'].shift(1)
+        
+        # Chartink-style breakout conditions
+        df['resistance_breakout'] = df['close'] > df['resistance']
+        df['ema_crossover'] = df['ema_short'] > df['ema_long']
+        df['volume_spike'] = df['volume'] >= (df['prev_day_volume'] * volume_factor)
+        df['price_above_threshold'] = df['close'] > price_threshold
+        df['bullish_candle'] = df['close'] > df['open']
+        
+        # Combined breakout signal - ALL conditions must be true
+        df['breakout'] = (
+            df['resistance_breakout'] & 
+            df['ema_crossover'] & 
+            df['volume_spike'] & 
+            df['price_above_threshold'] & 
+            df['bullish_candle']
+        )
+        
+        # Legacy signal column for backward compatibility
+        df['signal'] = df['breakout']
+        
         return df
     
     def get_current_analysis(self, df: pd.DataFrame) -> Dict:
-        """Get current analysis for latest data point"""
+        """Get current analysis for latest data point with detailed breakout conditions"""
         if df.empty:
             return {}
         
         latest = df.iloc[-1]
         prev_day = df.iloc[-2] if len(df) > 1 else latest
         
-        return {
+        analysis = {
             'symbol': '',
             'date': latest.get('date', ''),
+            'open': float(latest.get('open', 0)),
+            'high': float(latest.get('high', 0)),
+            'low': float(latest.get('low', 0)),
             'close': float(latest.get('close', 0)),
+            'volume': int(latest.get('volume', 0)),
+            'typical_price': float(latest.get('typical_price', 0)),
             'resistance': float(latest.get('resistance', 0)),
             'ema_short': float(latest.get('ema_short', 0)),
             'ema_long': float(latest.get('ema_long', 0)),
-            'volume': int(latest.get('volume', 0)),
-            'prev_day_volume': int(prev_day.get('volume', 0)),
-            'breakout_signal': bool(latest.get('signal', False)),
-            'change_pct': ((latest.get('close', 0) - prev_day.get('close', 1)) / prev_day.get('close', 1)) * 100
+            'prev_day_volume': int(latest.get('prev_day_volume', 0)),
+            'change_pct': ((latest.get('close', 0) - prev_day.get('close', 1)) / prev_day.get('close', 1)) * 100,
+            
+            # Individual breakout conditions
+            'resistance_breakout': bool(latest.get('resistance_breakout', False)),
+            'ema_crossover': bool(latest.get('ema_crossover', False)),
+            'volume_spike': bool(latest.get('volume_spike', False)),
+            'price_above_threshold': bool(latest.get('price_above_threshold', False)),
+            'bullish_candle': bool(latest.get('bullish_candle', False)),
+            
+            # Final breakout signal
+            'breakout_signal': bool(latest.get('breakout', False)),
+            
+            # Legacy field
+            'signal': bool(latest.get('signal', False))
         }
+        
+        return analysis
 
 async def fetch_and_analyze_historical_data():
     """Main function to fetch and analyze historical data with progress updates"""
@@ -256,7 +431,7 @@ async def fetch_and_analyze_historical_data():
                 return {}
             
             emit_progress('filtering', f'Filtering F&O instruments from {len(instruments_df)} total instruments...')
-            fno_df = fetcher.get_fno_instruments(instruments_df)
+            fno_df = fetcher.get_futstk_instruments(instruments_df)
             
             if fno_df.empty:
                 emit_progress('error', 'No F&O instruments found in instrument master')
@@ -289,7 +464,14 @@ async def fetch_and_analyze_historical_data():
             
             # Fetch historical data with rate limiting
             analyzed_data = {}
-            analyzer = BreakoutAnalyzer()
+            # Configuration parameters for Chartink-style analysis
+            lookback_period = 50
+            ema_short = 8
+            ema_long = 13
+            volume_factor = 0.5
+            price_threshold = 50
+            
+            analyzer = BreakoutAnalyzer(lookback=lookback_period, ema_short=ema_short, ema_long=ema_long)
             successful_fetches = 0
             failed_fetches = 0
             
@@ -308,7 +490,7 @@ async def fetch_and_analyze_historical_data():
                     if not df.empty:
                         emit_progress('analyzing', f'Analyzing {current_symbol} ({len(df)} days of data)...', i + 1, total_securities)
                         
-                        analyzed_df = analyzer.calculate_technical_indicators(df)
+                        analyzed_df = analyzer.calculate_technical_indicators(df, volume_factor=volume_factor, price_threshold=price_threshold)
                         current_analysis = analyzer.get_current_analysis(analyzed_df)
                         current_analysis['symbol'] = current_symbol
                         current_analysis['security_id'] = sec_info['security_id']
