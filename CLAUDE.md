@@ -4,28 +4,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a production-ready F&O (Futures & Options) scanner for Dhan trading platform with historical data analysis and a professional web dashboard. The system consists of two main components:
+This is a production-ready F&O (Futures & Options) scanner for Dhan trading platform with historical data analysis and professional web dashboard. The system operates as dual-mode architecture:
 
-1. **Standalone Scanner Engine** (`scanner.py`) - Real-time market data processor using Dhan WebSocket v2 (legacy/reference implementation)
-2. **Integrated Web Application** (`app.py`) - Flask-SocketIO web server with built-in historical analysis engine
+1. **Integrated Web Application** (`app.py`) - Primary mode: Flask-SocketIO web server with built-in historical analysis engine and background scanner thread
+2. **Standalone Scanner Engine** (`scanner.py`) - Legacy/reference: Real-time market data processor using Dhan WebSocket v2 for advanced users
 
 ## Current Architecture
 
 The system primarily operates as a single Flask application with integrated analysis:
 
 ```
-Dhan Instrument CSV → Active F&O Filter → Historical Data API → Breakout Analysis
+F&O Instrument CSV → Active Futures Filter → Extract Underlying Symbols
                                     ↓
-Flask Web App ← Socket.IO ← Progress Updates ← Background Thread
-     ↓
+NSE Equity Master API → Symbol→SecurityId Mapping → Historical Equity Data
+                                    ↓
+Breakout Analysis ← Background Thread → Progress Updates → Flask-SocketIO
+                                    ↓
 Professional Web UI (Dashboard)
 ```
 
 **Primary Components:**
-- **DhanHistoricalFetcher**: Fetches active F&O instruments and historical OHLCV data (dhanhq SDK + REST fallback)
+- **DhanHistoricalFetcher**: Fetches active F&O futures, resolves underlying equity securityIds, retrieves historical data
 - **BreakoutAnalyzer**: Implements Chartink-style resistance breakout analysis with 5-condition logic
 - **Flask-SocketIO**: Real-time progress updates and WebSocket communication to browser
 - **Professional Dashboard**: Dark theme trading interface with multiple tabs and live updates
+
+**Key Insight**: The system analyzes **underlying equity data** to predict **future contract behavior**, since Dhan's API doesn't provide historical data for future contracts directly.
 
 ## Development Commands
 
@@ -34,17 +38,31 @@ Professional Web UI (Dashboard)
 # Install dependencies
 pip install -r requirements.txt
 
-# Run web application (main mode)
+# Primary Mode: Integrated web application with historical analysis
 python app.py
-# Runs on http://localhost:5000
+# Demo mode on http://localhost:5000 (no credentials needed for testing UI)
 
-# Run with Dhan credentials (for live data)
+# With credentials for live historical data
 export DHAN_CLIENT_ID=your_id
 export DHAN_ACCESS_TOKEN=your_token
 python app.py
 
-# Run standalone scanner (legacy/reference)
+# Legacy Mode: Standalone real-time scanner (advanced users)
 python scanner.py --config config.json
+```
+
+### Production Commands
+```bash
+# Docker build and run
+docker build -t fno-scanner:latest .
+docker run -p 5000:5000 -e DHAN_CLIENT_ID=xxx -e DHAN_ACCESS_TOKEN=xxx fno-scanner:latest
+
+# Production deployment (systemd)
+sudo systemctl start dhan-scanner
+sudo journalctl -u dhan-scanner -f
+
+# Smart startup script (handles both local and container)
+./run.sh
 ```
 
 ### Testing Historical Data Analysis
@@ -62,30 +80,30 @@ curl http://localhost:5000/api/status
 2. **Live Mode**: Set credentials → Click "Fetch Historical" → See real F&O analysis
 3. **Debug Mode**: Use `/api/debug/instruments` to inspect instrument filtering logic
 
-### Production Deployment
-
-#### Docker
+### Railway Deployment (Primary)
 ```bash
-# Build and run
-docker build -t fno-scanner:latest .
-docker-compose up -d
+# Current production setup uses Railway with GitHub integration
+# Procfile: web: python app.py
+# railway.json: Nixpacks builder with health checks
 
-# View logs
-docker-compose logs -f
+# Required environment variables in Railway:
+DHAN_CLIENT_ID=your_client_id
+DHAN_ACCESS_TOKEN=your_access_token
+
+# Deployment process:
+git push origin main  # Triggers automatic Railway deployment
 ```
 
-#### Railway (Current Production)
+### Alternative Deployment Methods
 ```bash
-# Deployment uses simple Python execution (see Procfile)
-web: python app.py
+# Docker Compose (local production testing)
+docker-compose up -d
+docker-compose logs -f
 
-# Environment variables required:
-# DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN
-
-# Deploy to Railway:
-# 1. Connect GitHub repo to Railway
-# 2. Add environment variables in Railway dashboard
-# 3. Deploy automatically triggers on git push
+# systemd Service (Linux servers)
+sudo cp dhan-scanner.service /etc/systemd/system/
+sudo systemctl enable dhan-scanner
+sudo systemctl start dhan-scanner
 ```
 
 ## Key Components & Architecture Details
@@ -93,11 +111,15 @@ web: python app.py
 ### Core Classes (app.py)
 
 #### DhanHistoricalFetcher
-- **Purpose**: Fetches and filters active F&O instruments, retrieves historical data
+- **Purpose**: Fetches and filters active F&O instruments, retrieves historical data for underlying equities
 - **Key Methods**: 
   - `get_active_fno_futures()`: Filters for current month FUTSTK/FUTIDX from Dhan CSV
-  - `get_historical_data()`: Dual-mode (dhanhq SDK + REST API fallback)
-- **Data Sources**: `api-scrip-master.csv` (active F&O), not `-detailed.csv`
+  - `load_equity_instruments()`: Loads NSE equity master to create symbol → securityId mapping
+  - `get_historical_data_for_underlying()`: Fetches underlying equity data using numeric securityIds
+  - `extract_underlying_symbol()`: Converts future symbols (RELIANCE-Sep2025-FUT → RELIANCE)
+- **Data Sources**: 
+  - `api-scrip-master.csv` for active F&O filtering
+  - `/v2/instruments/master` API for equity securityId resolution
 
 #### BreakoutAnalyzer  
 - **Purpose**: Implements Chartink-style resistance breakout analysis
@@ -184,6 +206,30 @@ result = self.sdk.historical_daily_data(
 
 3. **Add UI Elements**: Extend dashboard.html with new tabs or data displays
 
+### Multi-timeframe Support (Configuration Available)
+The codebase includes `scanner_config.json` with predefined symbols and timeframes for extending analysis:
+```json
+{
+  "symbols": [
+    {"underlying": "RELIANCE"}, {"underlying": "HDFCBANK"}, {"underlying": "INFY"}, 
+    {"underlying": "TCS"}, {"underlying": "NIFTY 50"}, {"underlying": "BANKNIFTY"}
+  ],
+  "timeframes": ["1d", "15m", "5m"],
+  "analysis": {
+    "lookback_period": 50, "ema_short": 8, "ema_long": 13,
+    "volume_factor": 0.5, "price_threshold": 50
+  }
+}
+```
+
+### Adding New Strategy Classes
+The scanner supports extensible strategies by following the pattern in `scanner.py`:
+```python
+# In scanner.py: FNOEngine.__init__() initializes SymbolState for each security
+# Each state tracks: typical_price_history, ema_short/long, prev_day_volume
+# Evaluation happens in: close_and_evaluate() with 5-condition breakout logic
+```
+
 ## Security Notes
 
 - **Never commit credentials**: Use environment variables only
@@ -239,11 +285,27 @@ payload = {"securityId": str(security_id), "exchangeSegment": "NSE_EQ"}
 **Requirements**: Set `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` in Railway environment
 **Fallback**: App runs in demo mode without credentials
 
+## Deployment Architecture & Files
+
+### Key Configuration Files
+- `Procfile`: `web: python app.py` (Railway deployment)
+- `railway.json`: Nixpacks builder with health checks and restart policies
+- `Dockerfile`: Production container with systemd support
+- `dhan-scanner.service`: systemd service file for Linux servers
+- `run.sh`: Smart startup script (detects Docker vs local environment)
+- `DEPLOYMENT.md`: Complete production deployment guide
+- `TESTING.md`: Testing checklist and Railway deployment validation
+
+### Important Development Files  
+- `config.json`: Scanner parameters (batch_size, lookback_period, API endpoints)
+- `scanner_config.json`: Multi-timeframe symbol configuration
+- `requirements.txt`: Python dependencies (aiohttp, websockets, pandas, flask-socketio)
+
 ## Extensibility for New Strategies
 
-The codebase is designed for easy extension:
+The architecture supports multiple extension patterns:
 
-1. **Add Strategy Class**: Create new evaluation logic by extending BreakoutAnalyzer
-2. **Modify Technical Indicators**: Add new indicators in `calculate_technical_indicators()`
-3. **Update UI**: Add new tabs in templates/dashboard.html
-4. **Progress Tracking**: Use existing `emit_progress()` system for real-time updates
+1. **Web Dashboard Extensions** (Primary): Extend BreakoutAnalyzer in `app.py` for historical analysis
+2. **Real-time Scanner Extensions** (Advanced): Extend SymbolState evaluation in `scanner.py` for live WebSocket data
+3. **UI Extensions**: Add new tabs in `templates/dashboard.html` with Socket.IO real-time updates
+4. **API Extensions**: Add new endpoints in `app.py` following `/api/historical/fetch` pattern

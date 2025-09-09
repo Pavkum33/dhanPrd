@@ -188,31 +188,41 @@ class DhanHistoricalFetcher:
         return active_futures
     
     async def load_equity_instruments(self) -> dict:
-        """Load NSE equity instrument master and create symbol → securityId mapping"""
-        url = f"{self.base_url}/v2/instruments/master"
+        """Load NSE equity instrument master and create symbol → securityId mapping
+        
+        Uses the correct Dhan API endpoint for NSE equity segment
+        """
+        url = f"{self.base_url}/v2/instruments/NSE_EQ.json"
         
         try:
             async with self.session.get(url) as response:
                 if response.status == 200:
                     instruments = await response.json()
+                    logger.info(f"Fetched {len(instruments)} instruments from NSE_EQ.json")
                     
-                    # Create symbol → securityId mapping for NSE equities
+                    # Create symbol → securityId mapping for NSE equities and indices
                     equity_mapping = {}
                     for inst in instruments:
-                        if (inst.get("exchangeSegment") == "NSE_EQ" and 
-                            inst.get("instrumentType") in ["EQUITY", "INDEX"]):
+                        # Handle both EQUITY and INDEX instrument types
+                        if inst.get("instrumentType") in ["EQUITY", "INDEX"]:
                             symbol = inst.get("symbol")
                             security_id = inst.get("securityId")
                             if symbol and security_id:
                                 equity_mapping[symbol] = security_id
                     
-                    logger.info(f"Loaded {len(equity_mapping)} NSE equity/index instruments")
+                    logger.info(f"✅ Loaded {len(equity_mapping)} NSE equity/index instruments for symbol→securityId mapping")
+                    
+                    # Debug: Show sample mappings
+                    sample_symbols = list(equity_mapping.keys())[:5]
+                    for sym in sample_symbols:
+                        logger.info(f"Sample mapping: {sym} → {equity_mapping[sym]}")
+                    
                     return equity_mapping
                 else:
-                    logger.error(f"Failed to fetch instrument master: {response.status}")
+                    logger.error(f"❌ Failed to fetch NSE_EQ.json: {response.status}")
                     return {}
         except Exception as e:
-            logger.exception(f"Error loading instrument master: {e}")
+            logger.exception(f"❌ Error loading NSE equity instruments: {e}")
             return {}
 
     async def get_historical_data_for_underlying(self, underlying_symbol: str, security_id: int, days: int = 60, interval: str = "1d") -> pd.DataFrame:
@@ -226,21 +236,21 @@ class DhanHistoricalFetcher:
         
         logger.info(f"Fetching historical data: securityId={security_id}, symbol={underlying_symbol}, interval={interval}")
         
-        # REST API with numeric securityId (the key fix!)
-        url = f"{self.base_url}/charts/historical"
+        # Use correct Dhan historical data API endpoint
+        url = f"{self.base_url}/v2/chart/history"
         
-        # Use numeric securityId - this is what Dhan API requires
-        payload = {
+        # Prepare parameters following the working sample pattern
+        params = {
             "securityId": str(security_id),  # Numeric security ID from instrument master
-            "exchangeSegment": "NSE_EQ",     # NSE Equity segment
-            "instrumentType": "EQUITY",      # Will work for both equity and index
+            "exchangeSegment": "NSE_EQ",     # NSE Equity segment  
+            "instrument": "EQUITY",          # Match the working sample format
+            "interval": interval,            # Support multiple timeframes (1d, 15m, 5m, etc)
             "fromDate": from_date.strftime("%Y-%m-%d"),
-            "toDate": to_date.strftime("%Y-%m-%d"),
-            "interval": interval             # Support multiple timeframes (1d, 15m, 5m, etc)
+            "toDate": to_date.strftime("%Y-%m-%d")
         }
         
         try:
-            async with self.session.post(url, json=payload) as response:
+            async with self.session.get(url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
                     if 'data' in data and data['data']:
@@ -933,6 +943,39 @@ def debug_instruments():
             'columns': list(df.columns),
             'sample_data': sample_rows,
             'unique_segments': df[df.columns[0]].unique()[:10].tolist() if len(df.columns) > 0 else []
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/debug/equity-mapping')
+def debug_equity_mapping():
+    """Debug endpoint to test equity instrument loading"""
+    try:
+        client_id = os.getenv('DHAN_CLIENT_ID')
+        access_token = os.getenv('DHAN_ACCESS_TOKEN')
+        
+        if not client_id or not access_token:
+            return jsonify({'error': 'Dhan credentials not configured'}), 400
+        
+        async def test_equity_loading():
+            async with DhanHistoricalFetcher(client_id, access_token) as fetcher:
+                equity_mapping = await fetcher.load_equity_instruments()
+                return equity_mapping
+        
+        # Run the async function
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        equity_mapping = loop.run_until_complete(test_equity_loading())
+        loop.close()
+        
+        # Sample some results
+        sample_mappings = dict(list(equity_mapping.items())[:10]) if equity_mapping else {}
+        
+        return jsonify({
+            'total_mappings': len(equity_mapping),
+            'sample_mappings': sample_mappings,
+            'status': 'success' if equity_mapping else 'failed'
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
