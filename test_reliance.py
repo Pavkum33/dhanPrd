@@ -76,56 +76,97 @@ async def load_equity_mapping():
         return {}
 
 async def test_reliance_historical(security_id: str, access_token: str):
-    """Test RELIANCE historical data with correct parameters"""
+    """Multi-attempt test for RELIANCE historical data to discover API contract"""
     headers = {
         'Accept': 'application/json',
         'Content-Type': 'application/json', 
         'access-token': access_token
     }
     
-    # Test parameters for equity stock
-    exchange_segment = "NSE_EQ"
-    instrument_type = "EQUITY"
-    
     url = f"{BASE_URL}/v2/chart/history"
     end_date = datetime.now().date()
     start_date = end_date - timedelta(days=30)
     
-    params = {
-        "securityId": security_id,
-        "exchangeSegment": exchange_segment,
-        "instrumentType": instrument_type,
-        "interval": "1d",
-        "fromDate": start_date.strftime("%Y-%m-%d"),
-        "toDate": end_date.strftime("%Y-%m-%d")
-    }
+    # Test multiple parameter combinations
+    attempts = [
+        {
+            "params": {
+                "securityId": security_id,
+                "exchangeSegment": "NSE_EQ",
+                "instrumentType": "EQUITY",
+                "interval": "1d",
+                "fromDate": start_date.strftime("%Y-%m-%d"),
+                "toDate": end_date.strftime("%Y-%m-%d")
+            },
+            "label": "equity by securityId"
+        },
+        {
+            "params": {
+                "symbolName": "RELIANCE", 
+                "exchangeSegment": "NSE_EQ",
+                "instrumentType": "EQUITY",
+                "interval": "1d",
+                "fromDate": start_date.strftime("%Y-%m-%d"),
+                "toDate": end_date.strftime("%Y-%m-%d")
+            },
+            "label": "equity by symbolName"
+        },
+        {
+            "params": {
+                "securityId": security_id,
+                "exchangeSegment": "NSE_INDEX",
+                "instrumentType": "INDEX", 
+                "interval": "1d",
+                "fromDate": start_date.strftime("%Y-%m-%d"),
+                "toDate": end_date.strftime("%Y-%m-%d")
+            },
+            "label": "index by securityId"
+        },
+        {
+            "params": {
+                "symbolName": "RELIANCE",
+                "exchangeSegment": "NSE_INDEX", 
+                "instrumentType": "INDEX",
+                "interval": "1d",
+                "fromDate": start_date.strftime("%Y-%m-%d"),
+                "toDate": end_date.strftime("%Y-%m-%d")
+            },
+            "label": "index by symbolName"
+        }
+    ]
     
-    logger.info(f"Testing RELIANCE: securityId={security_id}, segment={exchange_segment}, type={instrument_type}")
+    logger.info(f"🧪 Testing RELIANCE with multiple API combinations (securityId={security_id})...")
     
     async with aiohttp.ClientSession(headers=headers) as session:
-        try:
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    candles = data.get("data", [])
-                    
-                    if candles:
-                        logger.info(f"🎉 SUCCESS! RELIANCE: Got {len(candles)} candles")
-                        logger.info(f"Sample candle: {candles[0] if candles else 'None'}")
-                        return True
+        for i, attempt in enumerate(attempts, 1):
+            try:
+                logger.info(f"🔍 Attempt {i}/4: RELIANCE via {attempt['label']}")
+                
+                async with session.get(url, params=attempt['params']) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        candles = data.get("data", [])
+                        
+                        if candles:
+                            logger.info(f"🎉 SUCCESS! RELIANCE: Got {len(candles)} candles via {attempt['label']}")
+                            logger.info(f"Sample candle: {candles[0] if candles else 'None'}")
+                            return True
+                        else:
+                            logger.debug(f"❌ Attempt {i}: RELIANCE - No data in response")
                     else:
-                        logger.warning(f"⚠️ RELIANCE: API returned 200 but no candles in data")
-                        logger.info(f"Full response: {data}")
-                        return False
-                else:
-                    logger.error(f"❌ RELIANCE: HTTP {response.status}")
-                    response_text = await response.text()
-                    logger.error(f"Response: {response_text}")
-                    return False
-                    
-        except Exception as e:
-            logger.exception(f"❌ RELIANCE: Exception during API call: {e}")
-            return False
+                        logger.debug(f"❌ Attempt {i}: RELIANCE - HTTP {response.status}")
+                        if response.status != 200:
+                            response_text = await response.text()
+                            logger.debug(f"Response: {response_text[:200]}")
+                            
+            except Exception as e:
+                logger.debug(f"❌ Attempt {i}: RELIANCE - Exception: {e}")
+                continue
+        
+        # All attempts failed
+        logger.error(f"❌ RELIANCE test FAILED! No working API combination found.")
+        logger.info(f"This suggests: API access not enabled, wrong endpoint, or account limitations")
+        return False
 
 async def main():
     """Main test function"""

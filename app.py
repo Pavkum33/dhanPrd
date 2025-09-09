@@ -279,71 +279,114 @@ class DhanHistoricalFetcher:
             return "NSE_EQ", "EQUITY"
 
     async def get_historical_data_for_underlying(self, underlying_symbol: str, security_id: int, days: int = 60, interval: str = "1d") -> pd.DataFrame:
-        """Fetch historical data using correct exchangeSegment AND instrumentType
+        """Multi-attempt historical data fetching to discover working API contract
         
-        Uses NSE_EQ+EQUITY for stocks and NSE_INDEX+INDEX for indices to resolve
-        "No historical data available" errors caused by wrong parameter combination.
+        Tests multiple parameter combinations to find what works with Dhan's API:
+        - securityId vs symbolName  
+        - NSE_EQ vs NSE_INDEX segments
+        - EQUITY vs INDEX instrument types
         """
         to_date = datetime.now().date()
         from_date = to_date - timedelta(days=days + 5)
         
-        # Resolve correct exchangeSegment AND instrumentType
-        exchange_segment, instrument_type = self.resolve_segment_and_type(underlying_symbol)
+        logger.info(f"🧪 Testing historical data for {underlying_symbol} (securityId={security_id}) with multiple API combinations...")
         
-        logger.info(f"Fetching historical data: securityId={security_id}, symbol={underlying_symbol}, segment={exchange_segment}, type={instrument_type}, interval={interval}")
+        # Test multiple parameter combinations to discover working API contract
+        attempts = [
+            # Attempt 1: Equity by securityId
+            {
+                "params": {
+                    "securityId": str(security_id),
+                    "exchangeSegment": "NSE_EQ", 
+                    "instrumentType": "EQUITY",
+                    "interval": interval,
+                    "fromDate": from_date.strftime("%Y-%m-%d"),
+                    "toDate": to_date.strftime("%Y-%m-%d")
+                },
+                "label": "equity by securityId"
+            },
+            # Attempt 2: Equity by symbolName
+            {
+                "params": {
+                    "symbolName": underlying_symbol,
+                    "exchangeSegment": "NSE_EQ",
+                    "instrumentType": "EQUITY", 
+                    "interval": interval,
+                    "fromDate": from_date.strftime("%Y-%m-%d"),
+                    "toDate": to_date.strftime("%Y-%m-%d")
+                },
+                "label": "equity by symbolName"
+            },
+            # Attempt 3: Index by securityId
+            {
+                "params": {
+                    "securityId": str(security_id),
+                    "exchangeSegment": "NSE_INDEX",
+                    "instrumentType": "INDEX",
+                    "interval": interval,
+                    "fromDate": from_date.strftime("%Y-%m-%d"),
+                    "toDate": to_date.strftime("%Y-%m-%d")
+                },
+                "label": "index by securityId"
+            },
+            # Attempt 4: Index by symbolName  
+            {
+                "params": {
+                    "symbolName": underlying_symbol,
+                    "exchangeSegment": "NSE_INDEX",
+                    "instrumentType": "INDEX",
+                    "interval": interval,
+                    "fromDate": from_date.strftime("%Y-%m-%d"),
+                    "toDate": to_date.strftime("%Y-%m-%d")
+                },
+                "label": "index by symbolName"
+            }
+        ]
         
-        # Use correct Dhan historical data API endpoint
-        url = f"{self.base_url}/v2/chart/history"
+        # Try each combination until one works
+        for i, attempt in enumerate(attempts, 1):
+            try:
+                url = f"{self.base_url}/v2/chart/history"
+                logger.info(f"🔍 Attempt {i}/4: {underlying_symbol} via {attempt['label']}")
+                
+                async with self.session.get(url, params=attempt['params']) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        candles = data.get('data', [])
+                        
+                        if candles:
+                            logger.info(f"🎉 SUCCESS! {underlying_symbol}: Got {len(candles)} candles via {attempt['label']}")
+                            
+                            # Convert to DataFrame
+                            df = pd.DataFrame(candles)
+                            
+                            # Normalize date column
+                            if 'timestamp' in df.columns:
+                                df['date'] = pd.to_datetime(df['timestamp'])
+                            elif 'date' in df.columns:
+                                df['date'] = pd.to_datetime(df['date'])
+                            
+                            # Ensure required columns exist
+                            required_cols = ['open', 'high', 'low', 'close', 'volume']
+                            for col in required_cols:
+                                if col not in df.columns:
+                                    df[col] = 0
+                            
+                            df = df.sort_values('date').reset_index(drop=True)
+                            return df[['date', 'open', 'high', 'low', 'close', 'volume']]
+                        else:
+                            logger.debug(f"❌ Attempt {i}: {underlying_symbol} - No data in response")
+                    else:
+                        logger.debug(f"❌ Attempt {i}: {underlying_symbol} - HTTP {response.status}")
+                        
+            except Exception as e:
+                logger.debug(f"❌ Attempt {i}: {underlying_symbol} - Exception: {e}")
+                continue
         
-        # Prepare parameters with BOTH correct segment and type
-        params = {
-            "securityId": str(security_id),      # Numeric security ID from instrument master
-            "exchangeSegment": exchange_segment, # NSE_EQ for equities, NSE_INDEX for indices
-            "instrumentType": instrument_type,   # EQUITY for stocks, INDEX for indices
-            "interval": interval,                # Support multiple timeframes (1d, 15m, 5m, etc)
-            "fromDate": from_date.strftime("%Y-%m-%d"),
-            "toDate": to_date.strftime("%Y-%m-%d")
-        }
-        
-        try:
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    # Check if data exists in response
-                    candles = data.get('data', [])
-                    if not candles:
-                        logger.warning(f"⚠️  {underlying_symbol}: No historical data available in Dhan's database (segment={exchange_segment}, type={instrument_type})")
-                        logger.info(f"This is normal for: new listings, illiquid stocks, or stocks not in F&O segment")
-                        return pd.DataFrame()  # Return empty DataFrame, don't fail the entire process
-                    
-                    df = pd.DataFrame(candles)
-                    
-                    # Normalize date column
-                    if 'timestamp' in df.columns:
-                        df['date'] = pd.to_datetime(df['timestamp'])
-                    elif 'date' in df.columns:
-                        df['date'] = pd.to_datetime(df['date'])
-                    
-                    # Ensure required columns exist
-                    required_cols = ['open', 'high', 'low', 'close', 'volume']
-                    for col in required_cols:
-                        if col not in df.columns:
-                            df[col] = 0
-                    
-                    df = df.sort_values('date').reset_index(drop=True)
-                    logger.info(f"✅ {underlying_symbol}: Successfully fetched {len(df)} candles (segment={exchange_segment}, type={instrument_type})")
-                    return df[['date', 'open', 'high', 'low', 'close', 'volume']]
-                    
-                else:
-                    logger.warning(f"❌ {underlying_symbol}: HTTP {response.status} from Dhan API")
-                    response_text = await response.text()
-                    logger.debug(f"Response: {response_text[:200]}")
-                    return pd.DataFrame()
-                    
-        except Exception as e:
-            logger.exception(f"❌ {underlying_symbol}: Exception fetching historical data: {e}")
-            return pd.DataFrame()
+        # All attempts failed
+        logger.warning(f"⚠️  {underlying_symbol}: No historical data found with any API combination")
+        logger.info(f"This could indicate: API access not enabled, deprecated endpoint, or data unavailable")
+        return pd.DataFrame()
     
     def extract_underlying_symbol(self, future_symbol: str) -> str:
         """Extract underlying symbol from future contract name
