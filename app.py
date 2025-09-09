@@ -308,48 +308,75 @@ class DhanHistoricalFetcher:
             try:
                 logger.info(f"🔄 Using dhanhq SDK for {underlying_symbol}")
                 
-                # Use correct SDK parameters (based on working sample)
-                sdk_exchange_segment = "NSE_INDEX" if is_index else "NSE_EQ"
-                
+                # Use correct SDK parameters (based on official GitHub repo)
                 response = self.sdk.historical_daily_data(
-                    symbol=underlying_symbol,  # Use symbol, not securityId
-                    exchange_segment=sdk_exchange_segment,  # String, not numeric
+                    security_id=str(security_id),  # Use security_id as per GitHub repo
+                    exchange_segment=exchange_segment,  # Use numeric segment
                     instrument_type=instrument_type,
-                    from_date=from_date.strftime("%Y-%m-%d"),  # from_date, not fromDate
-                    to_date=to_date.strftime("%Y-%m-%d")       # to_date, not toDate
+                    from_date=from_date.strftime("%Y-%m-%d"), 
+                    to_date=to_date.strftime("%Y-%m-%d")
                 )
                 
                 logger.info(f"🔍 SDK Response for {underlying_symbol}: {response}")
                 
-                if response and response.get('status') == 'success':
-                    candles = response.get('data', [])
-                    if candles:
+                # Handle SDK response (check multiple possible structures)
+                if response:
+                    # Try different response structures
+                    candles = None
+                    if isinstance(response, dict):
+                        if response.get('status') == 'success':
+                            candles = response.get('data', [])
+                        else:
+                            candles = response.get('data', response.get('candles', []))
+                    elif isinstance(response, list):
+                        candles = response
+                    elif hasattr(response, 'data'):
+                        candles = response.data
+                    
+                    if candles and len(candles) > 0:
                         logger.info(f"✅ {underlying_symbol}: Got {len(candles)} candles via SDK")
                         
-                        # Convert SDK result to DataFrame (using correct field names)
+                        # Convert SDK result to DataFrame (handle multiple timestamp formats)
                         df_data = []
                         for candle in candles:
-                            # SDK returns start_Time timestamp, convert to date
-                            timestamp = candle.get('start_Time', 0)
-                            candle_date = datetime.fromtimestamp(timestamp) if timestamp else datetime.now()
+                            # Try different timestamp field names and formats
+                            candle_date = None
+                            for time_field in ['start_Time', 'timestamp', 'date', 'time']:
+                                if time_field in candle:
+                                    timestamp = candle[time_field]
+                                    try:
+                                        if isinstance(timestamp, (int, float)):
+                                            # Unix timestamp (seconds or milliseconds)
+                                            if timestamp > 1e10:  # Milliseconds
+                                                candle_date = datetime.fromtimestamp(timestamp / 1000)
+                                            else:  # Seconds
+                                                candle_date = datetime.fromtimestamp(timestamp)
+                                        elif isinstance(timestamp, str):
+                                            candle_date = pd.to_datetime(timestamp)
+                                        break
+                                    except:
+                                        continue
+                            
+                            if not candle_date:
+                                candle_date = datetime.now()
                             
                             df_data.append({
                                 'date': candle_date,
-                                'open': float(candle.get('open', 0)),
-                                'high': float(candle.get('high', 0)), 
-                                'low': float(candle.get('low', 0)),
-                                'close': float(candle.get('close', 0)),
-                                'volume': float(candle.get('volume', 0))
+                                'open': float(candle.get('open', candle.get('o', 0))),
+                                'high': float(candle.get('high', candle.get('h', 0))), 
+                                'low': float(candle.get('low', candle.get('l', 0))),
+                                'close': float(candle.get('close', candle.get('c', 0))),
+                                'volume': float(candle.get('volume', candle.get('v', 0)))
                             })
                         
                         df = pd.DataFrame(df_data)
                         df = df.sort_values('date').reset_index(drop=True)
                         return df
                     else:
-                        logger.warning(f"⚠️ {underlying_symbol}: SDK returned empty data array")
+                        logger.warning(f"⚠️ {underlying_symbol}: SDK returned no candles. Response type: {type(response)}")
                         return pd.DataFrame()
                 else:
-                    logger.warning(f"⚠️ {underlying_symbol}: SDK returned error: {response}")
+                    logger.warning(f"⚠️ {underlying_symbol}: SDK returned None")
                     return pd.DataFrame()
                     
             except Exception as e:
