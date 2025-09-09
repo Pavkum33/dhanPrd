@@ -73,23 +73,71 @@ class DhanHistoricalFetcher:
             return pd.DataFrame()
     
     def get_fno_instruments(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Filter F&O instruments"""
-        seg_col = None
-        for col in df.columns:
-            if 'segment' in col.lower():
-                seg_col = col
-                break
+        """Filter F&O instruments with improved detection"""
+        logger.info(f"Available columns: {list(df.columns)}")
         
-        if seg_col:
-            fno_df = df[df[seg_col].astype(str).str.contains('FUT', na=False)].copy()
-        else:
-            exp_cols = [col for col in df.columns if 'expiry' in col.lower()]
-            if exp_cols:
-                fno_df = df[df[exp_cols[0]].notnull()].copy()
-            else:
-                fno_df = df.head(20).copy()  # Fallback to first 20
+        # Try multiple approaches to find F&O instruments
+        fno_df = pd.DataFrame()
         
-        logger.info(f"Found {len(fno_df)} F&O instruments")
+        # Method 1: Look for segment column with FUT
+        seg_cols = [col for col in df.columns if any(x in col.lower() for x in ['segment', 'exch', 'market'])]
+        if seg_cols:
+            seg_col = seg_cols[0]
+            logger.info(f"Trying segment column: {seg_col}")
+            fno_df = df[df[seg_col].astype(str).str.contains('FUT|FUTURE|NSE_FO|BSE_FO', case=False, na=False)].copy()
+            if len(fno_df) > 0:
+                logger.info(f"Found {len(fno_df)} F&O instruments using segment filter")
+                return fno_df
+        
+        # Method 2: Look for expiry date column
+        exp_cols = [col for col in df.columns if any(x in col.lower() for x in ['expiry', 'expire', 'maturity'])]
+        if exp_cols:
+            exp_col = exp_cols[0]
+            logger.info(f"Trying expiry column: {exp_col}")
+            fno_df = df[df[exp_col].notnull()].copy()
+            if len(fno_df) > 0:
+                logger.info(f"Found {len(fno_df)} instruments with expiry dates")
+                return fno_df
+        
+        # Method 3: Look for instrument type column
+        inst_cols = [col for col in df.columns if any(x in col.lower() for x in ['instrument', 'type', 'product'])]
+        if inst_cols:
+            inst_col = inst_cols[0]
+            logger.info(f"Trying instrument column: {inst_col}")
+            fno_df = df[df[inst_col].astype(str).str.contains('FUT|FUTURE|OPTION|INDEX', case=False, na=False)].copy()
+            if len(fno_df) > 0:
+                logger.info(f"Found {len(fno_df)} F&O instruments using instrument type")
+                return fno_df
+        
+        # Method 4: Look for symbol patterns (NIFTY, BANKNIFTY, etc.)
+        sym_cols = [col for col in df.columns if any(x in col.lower() for x in ['symbol', 'name', 'trading'])]
+        if sym_cols:
+            sym_col = sym_cols[0]
+            logger.info(f"Trying symbol pattern matching in: {sym_col}")
+            # Common F&O patterns
+            patterns = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX']
+            pattern_str = '|'.join(patterns)
+            fno_df = df[df[sym_col].astype(str).str.contains(pattern_str, case=False, na=False)].copy()
+            if len(fno_df) > 0:
+                logger.info(f"Found {len(fno_df)} instruments using symbol patterns")
+                return fno_df
+        
+        # Method 5: Sample a few popular stocks that likely have F&O
+        if sym_cols:
+            sym_col = sym_cols[0]
+            logger.info(f"Trying popular F&O stocks in: {sym_col}")
+            popular_fno = ['RELIANCE', 'TCS', 'HDFC', 'INFY', 'ITC', 'SBIN', 'LT', 'HCLTECH', 'AXISBANK', 'MARUTI']
+            pattern_str = '|'.join(popular_fno)
+            fno_df = df[df[sym_col].astype(str).str.contains(pattern_str, case=False, na=False)].copy()
+            if len(fno_df) > 0:
+                logger.info(f"Found {len(fno_df)} popular F&O stocks")
+                return fno_df
+        
+        # Method 6: Fallback - take a sample of instruments for testing
+        logger.warning("No F&O instruments found, taking sample for testing")
+        fno_df = df.sample(min(20, len(df))).copy() if len(df) > 0 else pd.DataFrame()
+        
+        logger.info(f"Final result: {len(fno_df)} instruments selected")
         return fno_df
     
     async def get_historical_data(self, security_id: str, days: int = 60) -> pd.DataFrame:
@@ -663,6 +711,31 @@ def get_historical_data():
         'symbols_count': len(scanner_state['historical_data']),
         'last_update': scanner_state['last_update']
     })
+
+@app.route('/api/debug/instruments')
+def debug_instruments():
+    """Debug endpoint to check instrument master structure"""
+    try:
+        import requests
+        url = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv"
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        
+        from io import StringIO
+        df = pd.read_csv(StringIO(response.text))
+        df.columns = [c.strip() for c in df.columns]
+        
+        # Get sample data
+        sample_rows = df.head(5).to_dict('records') if len(df) > 0 else []
+        
+        return jsonify({
+            'total_instruments': len(df),
+            'columns': list(df.columns),
+            'sample_data': sample_rows,
+            'unique_segments': df[df.columns[0]].unique()[:10].tolist() if len(df.columns) > 0 else []
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 def run_scanner_background():
     """Run the scanner in a separate thread"""
