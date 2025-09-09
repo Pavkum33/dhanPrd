@@ -340,31 +340,8 @@ class DhanHistoricalFetcher:
                     }
                 ]
                 
-                # For indices, add symbol-based attempt
-                if is_index:
-                    param_attempts.append({
-                        "symbol": underlying_symbol,
-                        "exchange_segment": "NSE_INDEX",
-                        "instrument_type": instrument_type,
-                        "from_date": from_date.strftime("%Y-%m-%d"),
-                        "to_date": to_date.strftime("%Y-%m-%d")
-                    })
-                    # Also try common index symbol variations
-                    index_variations = {
-                        "NIFTY": ["NIFTY 50", "NIFTY50"],
-                        "BANKNIFTY": ["BANK NIFTY", "BANKNIFTY"],
-                        "FINNIFTY": ["FIN NIFTY", "FINNIFTY"]
-                    }
-                    
-                    variations = index_variations.get(underlying_symbol, [])
-                    for variation in variations:
-                        param_attempts.append({
-                            "symbol": variation,
-                            "exchange_segment": "NSE_INDEX",
-                            "instrument_type": instrument_type,
-                            "from_date": from_date.strftime("%Y-%m-%d"),
-                            "to_date": to_date.strftime("%Y-%m-%d")
-                        })
+                # Note: SDK only accepts security_id, not symbol parameter
+                # For indices, we need correct security_id values from the instrument mapping
                 
                 response = None
                 for i, params in enumerate(param_attempts, 1):
