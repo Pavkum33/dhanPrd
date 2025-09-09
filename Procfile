@@ -1,1 +1,1 @@
-web: gunicorn -c gunicorn.conf.py app:app
+web: gunicorn --bind=0.0.0.0:$PORT --workers=1 --worker-class=eventlet --timeout=30 app:app
