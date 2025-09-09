@@ -187,78 +187,43 @@ class DhanHistoricalFetcher:
         
         return active_futures
     
-    async def get_historical_data(self, security_id: str, days: int = 60) -> pd.DataFrame:
-        """Fetch historical daily data for a security using SDK or REST API"""
+    async def get_historical_data_for_underlying(self, underlying_symbol: str, days: int = 60) -> pd.DataFrame:
+        """Fetch historical daily data for underlying equity/index (not the future contract)
+        
+        This is the correct approach since Dhan's API doesn't provide historical data for future contracts.
+        We analyze the underlying equity movement to predict future contract behavior.
+        """
         to_date = datetime.now().date()
         from_date = to_date - timedelta(days=days + 5)
         
-        logger.info(f"Fetching historical data: securityId={security_id}, exchangeSegment=2, instrumentType=FUTSTK")
+        logger.info(f"Fetching underlying historical data: symbol={underlying_symbol}, exchangeSegment=NSE_EQ")
         
-        # Method 1: Try dhanhq SDK first (more reliable)
-        if self.use_sdk and hasattr(self, 'sdk'):
-            try:
-                loop = asyncio.get_running_loop()
-                
-                def sdk_call():
-                    try:
-                        # SDK call for historical daily data - use extracted parameters
-                        result = self.sdk.historical_daily_data(
-                            securityId=int(security_id),  # Must be numeric
-                            exchangeSegment=2,            # NSE Futures = 2 (consistent)
-                            instrumentType="FUTSTK",      # Use FUTSTK for stock futures or FUTIDX for index futures
-                            fromDate=from_date.strftime("%Y-%m-%d"),
-                            toDate=to_date.strftime("%Y-%m-%d")
-                        )
-                        return result
-                    except Exception as e:
-                        logger.warning(f"SDK historical call failed for {security_id}: {e}")
-                        return {}
-                
-                # Execute SDK call in thread pool
-                result = await loop.run_in_executor(None, sdk_call)
-                
-                # Process SDK response
-                if result:
-                    data = result.get('data') or result.get('result') or []
-                    if isinstance(result, list):
-                        data = result
-                    
-                    if data:
-                        df = pd.DataFrame(data)
-                        
-                        # Normalize date column
-                        for date_col in ['timestamp', 'date', 'datetime']:
-                            if date_col in df.columns and 'date' not in df.columns:
-                                df['date'] = df[date_col]
-                                break
-                        
-                        # Ensure required columns exist
-                        required_cols = ['open', 'high', 'low', 'close', 'volume']
-                        for col in required_cols:
-                            if col not in df.columns:
-                                df[col] = 0
-                        
-                        if 'date' in df.columns:
-                            try:
-                                df['date'] = pd.to_datetime(df['date'])
-                                df = df.sort_values('date').reset_index(drop=True)
-                                logger.info(f"SDK: Fetched {len(df)} historical records for {security_id}")
-                                return df[['date', 'open', 'high', 'low', 'close', 'volume']]
-                            except Exception as e:
-                                logger.warning(f"Error processing SDK data for {security_id}: {e}")
-                
-            except Exception as e:
-                logger.warning(f"SDK historical fetch failed for {security_id}: {e}")
-        
-        # Method 2: Fallback to REST API
+        # Method 1: REST API for underlying equity
         url = f"{self.base_url}/charts/historical"
-        payload = {
-            "securityId": int(security_id),  # Must be numeric
-            "exchangeSegment": 2,            # NSE Futures = 2 
-            "instrument": "FUTSTK",          # Use consistent FUTSTK for stock futures
-            "fromDate": from_date.strftime("%Y-%m-%d"),
-            "toDate": to_date.strftime("%Y-%m-%d")
-        }
+        
+        # Determine if it's an index or equity
+        is_index = any(idx in underlying_symbol.upper() for idx in ['NIFTY', 'SENSEX', 'BANKEX'])
+        
+        if is_index:
+            # For indices like NIFTY, BANKNIFTY
+            payload = {
+                "symbol": underlying_symbol,
+                "exchangeSegment": "NSE_EQ",  # Use equity segment for indices too
+                "instrumentType": "INDEX",    # Index instrument type
+                "fromDate": from_date.strftime("%Y-%m-%d"),
+                "toDate": to_date.strftime("%Y-%m-%d"),
+                "interval": "1d"
+            }
+        else:
+            # For individual stocks like ADANIPORTS, RELIANCE
+            payload = {
+                "symbol": underlying_symbol,
+                "exchangeSegment": "NSE_EQ",  # NSE Equity
+                "instrumentType": "EQUITY",   # Equity instrument type  
+                "fromDate": from_date.strftime("%Y-%m-%d"),
+                "toDate": to_date.strftime("%Y-%m-%d"),
+                "interval": "1d"
+            }
         
         try:
             async with self.session.post(url, json=payload) as response:
@@ -273,21 +238,47 @@ class DhanHistoricalFetcher:
                         elif 'date' in df.columns:
                             df['date'] = pd.to_datetime(df['date'])
                         
+                        # Ensure required columns exist
                         required_cols = ['open', 'high', 'low', 'close', 'volume']
                         for col in required_cols:
                             if col not in df.columns:
                                 df[col] = 0
                         
                         df = df.sort_values('date').reset_index(drop=True)
-                        logger.info(f"REST: Fetched {len(df)} historical records for {security_id}")
+                        logger.info(f"✅ {underlying_symbol}: Fetched {len(df)} historical records")
                         return df[['date', 'open', 'high', 'low', 'close', 'volume']]
                 else:
-                    logger.warning(f"REST API error {response.status} for {security_id}")
+                    logger.warning(f"❌ {underlying_symbol}: API error {response.status}")
                     
             return pd.DataFrame()
         except Exception as e:
-            logger.exception(f"Error fetching historical data for {security_id}: {e}")
+            logger.exception(f"❌ {underlying_symbol}: Error fetching historical data: {e}")
             return pd.DataFrame()
+    
+    def extract_underlying_symbol(self, future_symbol: str) -> str:
+        """Extract underlying symbol from future contract name
+        
+        Examples:
+        - ADANIPORTS-Sep2025-FUT -> ADANIPORTS
+        - NIFTY-Sep2025-FUT -> NIFTY
+        - RELIANCE-Oct2025-FUT -> RELIANCE
+        """
+        # Remove common future contract suffixes
+        underlying = future_symbol.upper()
+        
+        # Remove date patterns and FUT suffix
+        import re
+        # Remove patterns like -Sep2025-FUT, -25SEP-FUT, etc.
+        underlying = re.sub(r'-[A-Za-z]{3}\d{4}-FUT$', '', underlying)
+        underlying = re.sub(r'-\d{2}[A-Za-z]{3}-FUT$', '', underlying) 
+        underlying = re.sub(r'-FUT$', '', underlying)
+        
+        # Remove any remaining date patterns
+        underlying = re.sub(r'\d{4}$', '', underlying)
+        underlying = re.sub(r'(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{2,4}$', '', underlying)
+        
+        logger.info(f"Extracted underlying: {future_symbol} -> {underlying}")
+        return underlying.strip()
 
 class BreakoutAnalyzer:
     """Analyzes historical data for breakout patterns"""
@@ -463,26 +454,31 @@ async def fetch_and_analyze_historical_data():
             
             for i, sec_info in enumerate(securities):
                 try:
-                    current_symbol = sec_info['symbol']
-                    emit_progress('fetching', f'Fetching historical data for {current_symbol}...', i + 1, total_securities, {
-                        'current_symbol': current_symbol,
+                    future_symbol = sec_info['symbol']  # e.g., ADANIPORTS-Sep2025-FUT
+                    underlying_symbol = fetcher.extract_underlying_symbol(future_symbol)  # e.g., ADANIPORTS
+                    
+                    emit_progress('fetching', f'Fetching historical data for {underlying_symbol}...', i + 1, total_securities, {
+                        'current_symbol': underlying_symbol,
                         'successful': successful_fetches,
                         'failed': failed_fetches
                     })
                     
                     await asyncio.sleep(0.3)  # Rate limiting
-                    df = await fetcher.get_historical_data(sec_info['security_id'])
+                    # Fetch underlying equity data instead of future contract data
+                    df = await fetcher.get_historical_data_for_underlying(underlying_symbol)
                     
                     if not df.empty:
-                        emit_progress('analyzing', f'Analyzing {current_symbol} ({len(df)} days of data)...', i + 1, total_securities)
+                        emit_progress('analyzing', f'Analyzing {underlying_symbol} ({len(df)} days of data)...', i + 1, total_securities)
                         
                         analyzed_df = analyzer.calculate_technical_indicators(df, volume_factor=volume_factor, price_threshold=price_threshold)
                         current_analysis = analyzer.get_current_analysis(analyzed_df)
-                        current_analysis['symbol'] = current_symbol
+                        current_analysis['symbol'] = underlying_symbol  # Use underlying symbol for display
+                        current_analysis['future_symbol'] = future_symbol  # Keep future contract name
                         current_analysis['security_id'] = sec_info['security_id']
                         
                         analyzed_data[sec_info['security_id']] = {
-                            'symbol': current_symbol,
+                            'symbol': underlying_symbol,  # Display underlying symbol
+                            'future_symbol': future_symbol,  # Keep future contract reference
                             'historical_data': analyzed_df,
                             'current_analysis': current_analysis
                         }
@@ -501,9 +497,9 @@ async def fetch_and_analyze_historical_data():
                         })
                     else:
                         failed_fetches += 1
-                        emit_progress('failed_symbol', f'❌ {current_symbol}: No historical data available', 
+                        emit_progress('failed_symbol', f'❌ {underlying_symbol}: No historical data available', 
                                     i + 1, total_securities, {
-                            'symbol': current_symbol,
+                            'symbol': underlying_symbol,
                             'successful': successful_fetches,
                             'failed': failed_fetches
                         })
