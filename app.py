@@ -175,78 +175,147 @@ class BreakoutAnalyzer:
         }
 
 async def fetch_and_analyze_historical_data():
-    """Main function to fetch and analyze historical data"""
+    """Main function to fetch and analyze historical data with progress updates"""
     client_id = os.getenv('DHAN_CLIENT_ID')
     access_token = os.getenv('DHAN_ACCESS_TOKEN')
     
-    if not client_id or not access_token:
-        logger.error("Dhan credentials not found in environment variables")
-        return {}
+    def emit_progress(step, message, current=0, total=0, data=None):
+        """Emit progress updates to all connected clients"""
+        progress_data = {
+            'step': step,
+            'message': message,
+            'current': current,
+            'total': total,
+            'progress_percent': int((current / total) * 100) if total > 0 else 0,
+            'data': data or {}
+        }
+        socketio.emit('historical_progress', progress_data)
+        logger.info(f"Progress: {message} ({current}/{total})")
     
-    logger.info("Starting historical data fetch...")
-    
-    async with DhanHistoricalFetcher(client_id, access_token) as fetcher:
-        instruments_df = await fetcher.get_instruments()
-        if instruments_df.empty:
-            logger.error("Failed to fetch instruments")
+    try:
+        if not client_id or not access_token:
+            emit_progress('error', 'Dhan credentials not found in environment variables')
             return {}
         
-        fno_df = fetcher.get_fno_instruments(instruments_df)
+        emit_progress('starting', 'Starting historical data fetch...')
         
-        # Prepare securities list (limit to first 15 for stability)
-        securities = []
-        for _, row in fno_df.head(15).iterrows():
-            security_id = None
-            symbol = None
+        async with DhanHistoricalFetcher(client_id, access_token) as fetcher:
+            emit_progress('instruments', 'Fetching instrument master from Dhan...')
+            instruments_df = await fetcher.get_instruments()
             
-            for col in row.index:
-                if 'security' in col.lower() and 'id' in col.lower():
-                    security_id = str(row[col])
-                    break
+            if instruments_df.empty:
+                emit_progress('error', 'Failed to fetch instruments from Dhan API')
+                return {}
             
-            for col in row.index:
-                if any(x in col.lower() for x in ['symbol', 'name', 'trading']):
-                    symbol = str(row[col])
-                    break
+            emit_progress('filtering', f'Filtering F&O instruments from {len(instruments_df)} total instruments...')
+            fno_df = fetcher.get_fno_instruments(instruments_df)
             
-            if security_id and symbol:
-                securities.append({
-                    'security_id': security_id,
-                    'symbol': symbol
-                })
-        
-        logger.info(f"Fetching historical data for {len(securities)} securities...")
-        
-        # Fetch historical data with rate limiting
-        analyzed_data = {}
-        analyzer = BreakoutAnalyzer()
-        
-        for i, sec_info in enumerate(securities):
-            try:
-                await asyncio.sleep(0.2)  # Rate limiting
-                df = await fetcher.get_historical_data(sec_info['security_id'])
+            if fno_df.empty:
+                emit_progress('error', 'No F&O instruments found in instrument master')
+                return {}
+            
+            # Prepare securities list (limit to first 15 for stability)
+            securities = []
+            for _, row in fno_df.head(15).iterrows():
+                security_id = None
+                symbol = None
                 
-                if not df.empty:
-                    analyzed_df = analyzer.calculate_technical_indicators(df)
-                    current_analysis = analyzer.get_current_analysis(analyzed_df)
-                    current_analysis['symbol'] = sec_info['symbol']
-                    current_analysis['security_id'] = sec_info['security_id']
-                    
-                    analyzed_data[sec_info['security_id']] = {
-                        'symbol': sec_info['symbol'],
-                        'historical_data': analyzed_df,
-                        'current_analysis': current_analysis
-                    }
-                    
-                    logger.info(f"Analyzed {sec_info['symbol']}: "
-                               f"Close={current_analysis['close']:.2f}, "
-                               f"Signal={current_analysis['breakout_signal']}")
+                for col in row.index:
+                    if 'security' in col.lower() and 'id' in col.lower():
+                        security_id = str(row[col])
+                        break
                 
-            except Exception as e:
-                logger.exception(f"Error processing {sec_info['symbol']}: {e}")
-        
-        logger.info(f"Historical analysis completed for {len(analyzed_data)} securities")
-        return analyzed_data
+                for col in row.index:
+                    if any(x in col.lower() for x in ['symbol', 'name', 'trading']):
+                        symbol = str(row[col])
+                        break
+                
+                if security_id and symbol:
+                    securities.append({
+                        'security_id': security_id,
+                        'symbol': symbol
+                    })
+            
+            total_securities = len(securities)
+            emit_progress('prepared', f'Prepared {total_securities} F&O securities for analysis', 0, total_securities)
+            
+            # Fetch historical data with rate limiting
+            analyzed_data = {}
+            analyzer = BreakoutAnalyzer()
+            successful_fetches = 0
+            failed_fetches = 0
+            
+            for i, sec_info in enumerate(securities):
+                try:
+                    current_symbol = sec_info['symbol']
+                    emit_progress('fetching', f'Fetching historical data for {current_symbol}...', i + 1, total_securities, {
+                        'current_symbol': current_symbol,
+                        'successful': successful_fetches,
+                        'failed': failed_fetches
+                    })
+                    
+                    await asyncio.sleep(0.3)  # Rate limiting
+                    df = await fetcher.get_historical_data(sec_info['security_id'])
+                    
+                    if not df.empty:
+                        emit_progress('analyzing', f'Analyzing {current_symbol} ({len(df)} days of data)...', i + 1, total_securities)
+                        
+                        analyzed_df = analyzer.calculate_technical_indicators(df)
+                        current_analysis = analyzer.get_current_analysis(analyzed_df)
+                        current_analysis['symbol'] = current_symbol
+                        current_analysis['security_id'] = sec_info['security_id']
+                        
+                        analyzed_data[sec_info['security_id']] = {
+                            'symbol': current_symbol,
+                            'historical_data': analyzed_df,
+                            'current_analysis': current_analysis
+                        }
+                        
+                        successful_fetches += 1
+                        
+                        # Check for breakout signal
+                        signal_status = "BREAKOUT" if current_analysis['breakout_signal'] else "No Signal"
+                        emit_progress('completed_symbol', f'✅ {current_symbol}: Close={current_analysis["close"]:.2f}, {signal_status}', 
+                                    i + 1, total_securities, {
+                            'symbol': current_symbol,
+                            'close': current_analysis['close'],
+                            'signal': current_analysis['breakout_signal'],
+                            'successful': successful_fetches,
+                            'failed': failed_fetches
+                        })
+                    else:
+                        failed_fetches += 1
+                        emit_progress('failed_symbol', f'❌ {current_symbol}: No historical data available', 
+                                    i + 1, total_securities, {
+                            'symbol': current_symbol,
+                            'successful': successful_fetches,
+                            'failed': failed_fetches
+                        })
+                    
+                except Exception as e:
+                    failed_fetches += 1
+                    emit_progress('error_symbol', f'❌ {current_symbol}: Error - {str(e)[:50]}...', 
+                                i + 1, total_securities, {
+                        'symbol': current_symbol,
+                        'error': str(e),
+                        'successful': successful_fetches,
+                        'failed': failed_fetches
+                    })
+            
+            emit_progress('summary', f'Historical analysis completed: {successful_fetches} successful, {failed_fetches} failed', 
+                        total_securities, total_securities, {
+                'total_analyzed': len(analyzed_data),
+                'successful': successful_fetches,
+                'failed': failed_fetches,
+                'breakouts_found': sum(1 for data in analyzed_data.values() if data['current_analysis']['breakout_signal'])
+            })
+            
+            return analyzed_data
+            
+    except Exception as e:
+        emit_progress('error', f'Critical error: {str(e)}')
+        logger.exception("Critical error in historical data fetch")
+        return {}
 
 # Global state
 scanner_state = {

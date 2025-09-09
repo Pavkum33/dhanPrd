@@ -54,6 +54,10 @@ class DhanScanner {
         this.socket.on('stats', (stats) => {
             this.updateStats(stats);
         });
+
+        this.socket.on('historical_progress', (progress) => {
+            this.updateProgress(progress);
+        });
     }
 
     setupEventListeners() {
@@ -134,10 +138,15 @@ class DhanScanner {
     async fetchHistoricalData() {
         const btn = document.getElementById('fetchHistorical');
         const originalText = btn.textContent;
+        const progressPanel = document.getElementById('progressPanel');
         
         try {
             btn.disabled = true;
-            btn.textContent = 'Fetching...';
+            btn.textContent = 'Starting...';
+            
+            // Show progress panel
+            progressPanel.style.display = 'block';
+            this.resetProgress();
             
             const response = await fetch('/api/historical/fetch', {
                 method: 'POST',
@@ -150,45 +159,99 @@ class DhanScanner {
             
             if (response.ok) {
                 this.showNotification('Historical Fetch Started', 'Fetching historical data for F&O analysis...');
-                
-                // Poll for status
-                this.pollHistoricalStatus();
+                this.addProgressLog('Started historical data fetch...', 'info');
             } else {
                 this.showNotification('Error', result.error || 'Failed to start historical fetch');
+                this.addProgressLog('Error: ' + (result.error || 'Failed to start'), 'error');
+                progressPanel.style.display = 'none';
             }
         } catch (error) {
             console.error('Historical fetch error:', error);
             this.showNotification('Error', 'Network error occurred');
+            this.addProgressLog('Network error: ' + error.message, 'error');
         } finally {
-            btn.disabled = false;
-            btn.textContent = originalText;
+            if (!progressPanel.style.display || progressPanel.style.display === 'none') {
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
         }
     }
 
-    async pollHistoricalStatus() {
-        const pollStatus = async () => {
-            try {
-                const response = await fetch('/api/historical/status');
-                const status = await response.json();
-                
-                if (status.running) {
-                    document.getElementById('fetchHistorical').textContent = 
-                        `Fetching... (${status.symbols_count} processed)`;
-                    setTimeout(pollStatus, 2000); // Poll every 2 seconds
-                } else {
-                    document.getElementById('fetchHistorical').textContent = 'Fetch Historical';
-                    if (status.symbols_count > 0) {
-                        this.showNotification('Historical Analysis Complete', 
-                            `Analyzed ${status.symbols_count} F&O securities`);
-                    }
-                }
-            } catch (error) {
-                console.error('Status poll error:', error);
-            }
-        };
-        
-        pollStatus();
+    resetProgress() {
+        document.getElementById('progressBar').style.width = '0%';
+        document.getElementById('progressText').textContent = '0%';
+        document.getElementById('progressMessage').textContent = 'Starting...';
+        document.getElementById('successCount').textContent = '0';
+        document.getElementById('failCount').textContent = '0';
+        document.getElementById('breakoutCount').textContent = '0';
+        document.getElementById('progressLog').innerHTML = '';
     }
+
+    updateProgress(progress) {
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        const progressMessage = document.getElementById('progressMessage');
+        const btn = document.getElementById('fetchHistorical');
+        
+        // Update progress bar
+        if (progress.total > 0) {
+            progressBar.style.width = progress.progress_percent + '%';
+            progressText.textContent = progress.progress_percent + '%';
+        }
+        
+        // Update message
+        progressMessage.textContent = progress.message;
+        
+        // Update button text
+        if (progress.step === 'fetching' || progress.step === 'analyzing') {
+            btn.textContent = `Processing... (${progress.current}/${progress.total})`;
+        }
+        
+        // Update stats if available
+        if (progress.data) {
+            if (progress.data.successful !== undefined) {
+                document.getElementById('successCount').textContent = progress.data.successful;
+            }
+            if (progress.data.failed !== undefined) {
+                document.getElementById('failCount').textContent = progress.data.failed;
+            }
+            if (progress.data.breakouts_found !== undefined) {
+                document.getElementById('breakoutCount').textContent = progress.data.breakouts_found;
+            }
+        }
+        
+        // Add to log
+        let logType = 'info';
+        if (progress.step === 'error' || progress.step === 'error_symbol') {
+            logType = 'error';
+        } else if (progress.step === 'completed_symbol') {
+            logType = 'success';
+        }
+        
+        this.addProgressLog(progress.message, logType);
+        
+        // Handle completion
+        if (progress.step === 'summary' || progress.step === 'error') {
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = 'Fetch Historical';
+                if (progress.step === 'summary') {
+                    this.showNotification('Analysis Complete', 
+                        `Processed ${progress.data.successful} securities, found ${progress.data.breakouts_found} breakouts`);
+                }
+            }, 2000);
+        }
+    }
+
+    addProgressLog(message, type = 'info') {
+        const log = document.getElementById('progressLog');
+        const entry = document.createElement('div');
+        entry.className = `log-entry ${type}`;
+        entry.innerHTML = `<span class="timestamp">${new Date().toLocaleTimeString()}</span> ${message}`;
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+    }
+
 
     applyFilters() {
         const filters = {

@@ -111,6 +111,31 @@
                                 </select>
                             </div>
                             <button class="btn btn-primary btn-block" id="applyFilters">Apply Filters</button>
+                            
+                            <!-- Progress Panel -->
+                            <div class="progress-panel" id="progressPanel" style="display: none;">
+                                <h3>Progress</h3>
+                                <div class="progress-bar-container">
+                                    <div class="progress-bar" id="progressBar"></div>
+                                    <span class="progress-text" id="progressText">0%</span>
+                                </div>
+                                <div class="progress-message" id="progressMessage">Ready</div>
+                                <div class="progress-stats" id="progressStats">
+                                    <div class="stat">
+                                        <span class="stat-label">Successful:</span>
+                                        <span class="stat-value" id="successCount">0</span>
+                                    </div>
+                                    <div class="stat">
+                                        <span class="stat-label">Failed:</span>
+                                        <span class="stat-value" id="failCount">0</span>
+                                    </div>
+                                    <div class="stat">
+                                        <span class="stat-label">Breakouts:</span>
+                                        <span class="stat-value" id="breakoutCount">0</span>
+                                    </div>
+                                </div>
+                                <div class="progress-log" id="progressLog"></div>
+                            </div>
                         </div>
 
                         <!-- Live Data Table -->
