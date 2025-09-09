@@ -91,8 +91,16 @@ class EquityTester:
             logger.exception(f"❌ Error loading equity instruments from CSV: {e}")
             return {}
     
+    def is_index_symbol(self, symbol: str) -> bool:
+        """Determine if a symbol is an index (not an equity stock)"""
+        index_symbols = {
+            "NIFTY", "NIFTY 50", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", 
+            "NIFTYNXT50", "NIFTYIT", "NIFTYPHARMA", "NIFTYAUTO", "NIFTYMETAL"
+        }
+        return symbol.upper().strip() in index_symbols
+
     async def test_historical_fetch(self, equity_mapping):
-        """Test historical data fetching for sample symbols"""
+        """Test historical data fetching for sample symbols with correct segments"""
         test_symbols = ['RELIANCE', 'NIFTY 50', 'BANKNIFTY', 'TCS', 'INFY']
         success, fail = 0, 0
         
@@ -104,6 +112,10 @@ class EquityTester:
                     fail += 1
                     continue
                 
+                # Determine correct exchange segment
+                is_index = self.is_index_symbol(symbol)
+                exchange_segment = "NSE_INDEX" if is_index else "NSE_EQ"
+                
                 # Test historical data fetch
                 url = f"{BASE_URL}/v2/chart/history"
                 end_date = datetime.now().date()
@@ -111,12 +123,14 @@ class EquityTester:
                 
                 params = {
                     "securityId": str(security_id),
-                    "exchangeSegment": "NSE_EQ",
+                    "exchangeSegment": exchange_segment,  # Use correct segment
                     "instrument": "EQUITY",
                     "interval": "1d",
                     "fromDate": start_date.strftime("%Y-%m-%d"),
                     "toDate": end_date.strftime("%Y-%m-%d")
                 }
+                
+                logger.info(f"Testing {symbol}: securityId={security_id}, segment={exchange_segment}")
                 
                 try:
                     async with session.get(url, params=params) as response:

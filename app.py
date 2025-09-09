@@ -261,26 +261,40 @@ class DhanHistoricalFetcher:
             logger.exception(f"❌ Error loading equity instruments from CSV: {e}")
             return {}
 
+    def is_index_symbol(self, symbol: str) -> bool:
+        """Determine if a symbol is an index (not an equity stock)"""
+        # List of known index symbols that require NSE_INDEX segment
+        index_symbols = {
+            "NIFTY", "NIFTY 50", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", 
+            "NIFTYNXT50", "NIFTYIT", "NIFTYPHARMA", "NIFTYAUTO", "NIFTYMETAL",
+            "NIFTYFMCG", "NIFTYENERGY", "NIFTYPSE", "NIFTYREALTY", "NIFTYMEDIA"
+        }
+        return symbol.upper().strip() in index_symbols
+
     async def get_historical_data_for_underlying(self, underlying_symbol: str, security_id: int, days: int = 60, interval: str = "1d") -> pd.DataFrame:
-        """Fetch historical data using numeric securityId (the correct approach for Dhan API)
+        """Fetch historical data using numeric securityId with correct exchangeSegment
         
-        This resolves "No historical data" by using exact securityId from instrument master
-        instead of symbol names which the API doesn't recognize.
+        Uses NSE_EQ for equity stocks and NSE_INDEX for indices to resolve
+        "No historical data available" errors caused by wrong segment selection.
         """
         to_date = datetime.now().date()
         from_date = to_date - timedelta(days=days + 5)
         
-        logger.info(f"Fetching historical data: securityId={security_id}, symbol={underlying_symbol}, interval={interval}")
+        # Determine correct exchange segment based on symbol type
+        is_index = self.is_index_symbol(underlying_symbol)
+        exchange_segment = "NSE_INDEX" if is_index else "NSE_EQ"
+        
+        logger.info(f"Fetching historical data: securityId={security_id}, symbol={underlying_symbol}, segment={exchange_segment}, interval={interval}")
         
         # Use correct Dhan historical data API endpoint
         url = f"{self.base_url}/v2/chart/history"
         
-        # Prepare parameters following the working sample pattern
+        # Prepare parameters with correct exchange segment
         params = {
-            "securityId": str(security_id),  # Numeric security ID from instrument master
-            "exchangeSegment": "NSE_EQ",     # NSE Equity segment  
-            "instrument": "EQUITY",          # Match the working sample format
-            "interval": interval,            # Support multiple timeframes (1d, 15m, 5m, etc)
+            "securityId": str(security_id),      # Numeric security ID from instrument master
+            "exchangeSegment": exchange_segment, # NSE_EQ for equities, NSE_INDEX for indices
+            "instrument": "EQUITY",              # Keep as EQUITY for both (Dhan API requirement)
+            "interval": interval,                # Support multiple timeframes (1d, 15m, 5m, etc)
             "fromDate": from_date.strftime("%Y-%m-%d"),
             "toDate": to_date.strftime("%Y-%m-%d")
         }
