@@ -772,7 +772,7 @@ class DhanScanner {
         this.updateScannerStatus('cprScanStatus', 'scanning', 'Scanning...');
         
         try {
-            const response = await fetch('/api/levels/narrow-cpr?month=' + this.getCurrentMonth());
+            const response = await fetch('/api/levels/narrow-cpr-railway?month=' + this.getCurrentMonth());
             const data = await response.json();
             
             this.updateCprResults(data);
