@@ -114,6 +114,17 @@ except ImportError as e:
                 'sqlite_available': True,
                 'current_backend': 'Railway SQLite'
             }
+        
+        def get_cache_stats(self):
+            """Get cache statistics"""
+            return self.get_stats()
+        
+        def health_check(self):
+            """Health check for cache system"""
+            return {
+                'redis': False,
+                'sqlite': True
+            }
     
     class RailwayMonthlyLevelCalculator:
         """Railway-compatible monthly level calculator"""
