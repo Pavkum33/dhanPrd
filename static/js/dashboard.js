@@ -326,7 +326,7 @@ class DhanScanner {
         btn.disabled = true;
         btn.textContent = 'Testing...';
         
-        this.addActivityLog('🚀 Starting live market WebSocket test for RELIANCE...', 'info');
+        this.addActivityLog('[TEST] Starting live market WebSocket test for RELIANCE...', 'info');
         
         // Call the API endpoint
         fetch('/api/websocket/live-market-test', {
@@ -342,20 +342,20 @@ class DhanScanner {
         .then(response => response.json())
         .then(data => {
             console.log('Live Market Test Response:', data);
-            this.addActivityLog(`📡 ${data.message || 'Test started'}`, 'success');
-            this.addActivityLog(`📊 WebSocket events: ${data.websocket_events || 'live_market_test'}`, 'info');
-            this.addActivityLog(`⏱️ Duration: ${data.duration || '20 seconds'}`, 'info');
+            this.addActivityLog(`[API] ${data.message || 'Test started'}`, 'success');
+            this.addActivityLog(`[WS] WebSocket events: ${data.websocket_events || 'live_market_test'}`, 'info');
+            this.addActivityLog(`[TIME] Duration: ${data.duration || '20 seconds'}`, 'info');
             
             // Re-enable button after 25 seconds
             setTimeout(() => {
                 btn.disabled = false;
                 btn.textContent = 'Live Market Test';
-                this.addActivityLog('✅ Live market test completed!', 'success');
+                this.addActivityLog('[DONE] Live market test completed!', 'success');
             }, 25000);
         })
         .catch(error => {
             console.error('Live Market Test Error:', error);
-            this.addActivityLog(`❌ Test failed: ${error.message}`, 'error');
+            this.addActivityLog(`[ERROR] Test failed: ${error.message}`, 'error');
             btn.disabled = false;
             btn.textContent = 'Live Market Test';
         });
@@ -481,16 +481,16 @@ class DhanScanner {
             
             // Add data details to log for key steps
             if (step === 'data_success') {
-                this.addActivityLog(`📊 ${data.data.symbol}: ₹${data.data.latest_close} (${data.data.data_points} days, Vol: ${data.data.latest_volume})`, 'data');
+                this.addActivityLog(`[DATA] ${data.data.symbol}: Rs${data.data.latest_close} (${data.data.data_points} days, Vol: ${data.data.latest_volume})`, 'data');
             } else if (step === 'live_update') {
-                this.addActivityLog(`📈 Update #${data.data.update_number}: ₹${data.data.simulated_price} (was ₹${data.data.original_close})`, 'update');
+                this.addActivityLog(`[UPDATE] #${data.data.update_number}: Rs${data.data.simulated_price} (was Rs${data.data.original_close})`, 'update');
             }
         }
         
         // Show summary for completion
         if (step === 'completed' && data.summary) {
             const summary = data.summary;
-            this.addActivityLog(`✅ Test Summary: ${summary.total_updates} updates in ${summary.duration}s - WebSocket: ${summary.websocket_status}`, 'success');
+            this.addActivityLog(`[SUMMARY] ${summary.total_updates} updates in ${summary.duration}s - WebSocket: ${summary.websocket_status}`, 'success');
         }
         
         // Update progress bar if needed
@@ -1057,12 +1057,12 @@ class DhanScanner {
         if (progressMessage) progressMessage.textContent = message;
     }
     
-    addActivityLog(message) {
+    addActivityLog(message, logClass = 'info') {
         const activityLog = document.getElementById('activityLog');
         if (activityLog) {
             const time = new Date().toLocaleTimeString();
             const item = document.createElement('div');
-            item.className = 'activity-item';
+            item.className = `activity-item activity-${logClass}`;
             item.innerHTML = `
                 <span class="activity-time">${time}</span>
                 <span class="activity-message">${message}</span>
