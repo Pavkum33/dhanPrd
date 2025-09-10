@@ -23,7 +23,9 @@
       "Bash(set DHAN_CLIENT_ID=1106283829)",
       "Bash(set:*)",
       "Bash(set PORT=5050)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(git ls-tree:*)"
     ],
     "deny": [],
     "ask": []

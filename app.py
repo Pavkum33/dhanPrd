@@ -33,6 +33,22 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# 🔑 Global in-memory cache for Railway (replaces file-based cache)
+# This solves Railway ephemeral storage issue - no more cache/historical_data.pkl
+GLOBAL_SCAN_CACHE = {
+    'analyzed_data': {},           # Main analysis results: {security_id: {symbol, analysis, etc}}
+    'timestamp': None,             # When cache was last updated  
+    'total_symbols': 0,            # Total symbols processed
+    'successful_fetches': 0,       # Successful data fetches
+    'failed_fetches': 0,           # Failed data fetches  
+    'breakouts_found': 0,          # Number of breakout signals
+    'last_update': None,           # ISO timestamp of last update
+    'narrow_cpr_cache': [],        # Cached narrow CPR results
+    'cache_source': 'memory'       # Indicates in-memory vs file cache
+}
+
+logger.info(f"🚀 Global in-memory cache initialized for Railway compatibility")
+
 # Optional dhanhq SDK import
 try:
     from dhanhq import dhanhq
@@ -2117,6 +2133,201 @@ def test_level_calculation():
         
     except Exception as e:
         logger.error(f"Error in test calculation: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/websocket/live-market-test', methods=['POST'])
+def live_market_websocket_test():
+    """
+    🚀 Live Market WebSocket Test Endpoint for Railway
+    Tests real-time WebSocket functionality with RELIANCE stock data
+    """
+    try:
+        logger.info("🚀 Starting live market WebSocket test...")
+        
+        # Check credentials
+        client_id = os.getenv('DHAN_CLIENT_ID')
+        access_token = os.getenv('DHAN_ACCESS_TOKEN')
+        
+        if not client_id or not access_token:
+            # Emit demo WebSocket event
+            socketio.emit('live_market_test', {
+                'step': 'credentials_missing',
+                'message': 'Demo mode: No credentials found',
+                'status': 'demo',
+                'timestamp': datetime.now().isoformat()
+            })
+            return jsonify({
+                'status': 'demo_mode',
+                'message': 'WebSocket test running in demo mode - check browser console for events',
+                'websocket_event': 'live_market_test emitted'
+            })
+        
+        # Get request parameters
+        data = request.get_json() or {}
+        symbol = data.get('symbol', 'RELIANCE')
+        test_duration = data.get('duration', 30)  # seconds
+        
+        def run_live_test():
+            """Background task to run live market test with real data"""
+            try:
+                # Import SDK
+                from dhanhq import dhanhq
+                
+                # Initialize SDK
+                dhan = dhanhq(client_id, access_token)
+                
+                # Emit start event
+                socketio.emit('live_market_test', {
+                    'step': 'starting',
+                    'message': f'Starting live test for {symbol} (Duration: {test_duration}s)',
+                    'symbol': symbol,
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+                # Get equity instruments for symbol resolution
+                logger.info(f"🔍 Resolving {symbol} security ID...")
+                instruments_df = pd.read_csv('data/nse_eq.csv')
+                
+                # Find RELIANCE security ID
+                reliance_row = instruments_df[instruments_df['SEM_TRADING_SYMBOL'] == symbol]
+                if reliance_row.empty:
+                    # Try alternative column names
+                    reliance_row = instruments_df[instruments_df['SYMBOL'] == symbol] if 'SYMBOL' in instruments_df.columns else pd.DataFrame()
+                
+                if not reliance_row.empty:
+                    security_id = str(reliance_row.iloc[0]['SEM_SMST_SECURITY_ID'] if 'SEM_SMST_SECURITY_ID' in reliance_row.columns 
+                                    else reliance_row.iloc[0]['SECURITY_ID'] if 'SECURITY_ID' in reliance_row.columns else '1333')
+                    
+                    # Emit security ID found
+                    socketio.emit('live_market_test', {
+                        'step': 'symbol_resolved',
+                        'message': f'{symbol} resolved to Security ID: {security_id}',
+                        'security_id': security_id,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+                    # Fetch live historical data (last 10 days)
+                    from_date = datetime.now() - timedelta(days=10)
+                    to_date = datetime.now()
+                    
+                    socketio.emit('live_market_test', {
+                        'step': 'fetching_data',
+                        'message': f'Fetching {symbol} data for last 10 days...',
+                        'from_date': from_date.strftime('%Y-%m-%d'),
+                        'to_date': to_date.strftime('%Y-%m-%d'),
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+                    # SDK call
+                    response = dhan.historical_daily_data(
+                        security_id=security_id,
+                        exchange_segment="NSE_EQ",
+                        instrument_type="EQUITY",
+                        from_date=from_date.strftime("%Y-%m-%d"),
+                        to_date=to_date.strftime("%Y-%m-%d")
+                    )
+                    
+                    if response['status'] == 'success' and response['data']:
+                        data = response['data']
+                        latest_close = data['close'][-1] if data['close'] else 0
+                        latest_volume = data['volume'][-1] if data['volume'] else 0
+                        data_points = len(data['close']) if data['close'] else 0
+                        
+                        # Calculate simple metrics
+                        avg_close = sum(data['close'][-5:]) / 5 if len(data['close']) >= 5 else latest_close
+                        price_change_pct = ((latest_close - avg_close) / avg_close * 100) if avg_close > 0 else 0
+                        
+                        # Emit success with real data
+                        socketio.emit('live_market_test', {
+                            'step': 'data_success',
+                            'message': f'✅ {symbol} live data fetched successfully!',
+                            'data': {
+                                'symbol': symbol,
+                                'latest_close': latest_close,
+                                'latest_volume': latest_volume,
+                                'data_points': data_points,
+                                'avg_5day_close': round(avg_close, 2),
+                                'price_change_pct': round(price_change_pct, 2)
+                            },
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        
+                        # Simulate real-time updates for test duration
+                        import time
+                        updates_sent = 0
+                        start_time = time.time()
+                        
+                        while time.time() - start_time < test_duration and updates_sent < 10:
+                            time.sleep(3)  # Update every 3 seconds
+                            updates_sent += 1
+                            
+                            # Simulate price movement (±0.5%)
+                            import random
+                            simulated_price = latest_close * (1 + random.uniform(-0.005, 0.005))
+                            
+                            socketio.emit('live_market_test', {
+                                'step': 'live_update',
+                                'message': f'Live update #{updates_sent} for {symbol}',
+                                'data': {
+                                    'symbol': symbol,
+                                    'simulated_price': round(simulated_price, 2),
+                                    'original_close': latest_close,
+                                    'update_number': updates_sent
+                                },
+                                'timestamp': datetime.now().isoformat()
+                            })
+                        
+                        # Final completion event
+                        socketio.emit('live_market_test', {
+                            'step': 'completed',
+                            'message': f'🎉 Live market WebSocket test completed! ({updates_sent} updates sent)',
+                            'summary': {
+                                'symbol': symbol,
+                                'total_updates': updates_sent,
+                                'duration': round(time.time() - start_time, 1),
+                                'websocket_status': 'working',
+                                'data_status': 'live'
+                            },
+                            'timestamp': datetime.now().isoformat()
+                        })
+                    else:
+                        # Emit data fetch error
+                        socketio.emit('live_market_test', {
+                            'step': 'data_error',
+                            'message': f'❌ Failed to fetch {symbol} data: {response}',
+                            'error': response,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                else:
+                    # Symbol not found
+                    socketio.emit('live_market_test', {
+                        'step': 'symbol_error',
+                        'message': f'❌ {symbol} not found in equity instruments',
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+            except Exception as e:
+                logger.error(f"Live test error: {e}")
+                socketio.emit('live_market_test', {
+                    'step': 'error',
+                    'message': f'❌ Live market test error: {str(e)}',
+                    'error': str(e),
+                    'timestamp': datetime.now().isoformat()
+                })
+        
+        # Start background test
+        threading.Thread(target=run_live_test, daemon=True).start()
+        
+        return jsonify({
+            'status': 'test_started',
+            'message': f'Live market WebSocket test started for {symbol}',
+            'websocket_events': 'live_market_test',
+            'duration': f'{test_duration} seconds',
+            'instructions': 'Monitor browser console or WebSocket client for real-time events'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting live market test: {e}")
         return jsonify({'error': str(e)}), 500
 
 def run_scanner_background():

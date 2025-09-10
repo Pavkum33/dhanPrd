@@ -88,6 +88,11 @@ class DhanScanner {
             if (data.cache_status) this.updateMetric('cacheStatus', data.cache_status);
             if (data.symbols_count) this.updateMetric('symbolsCount', data.symbols_count);
         });
+        
+        // Live market test WebSocket events
+        this.socket.on('live_market_test', (data) => {
+            this.handleLiveMarketTestEvent(data);
+        });
     }
 
     setupEventListeners() {
@@ -404,6 +409,54 @@ class DhanScanner {
         this.updateAlertCount();
         this.updateAlertsList();
         document.getElementById('alertFeed').innerHTML = '';
+    }
+
+    handleLiveMarketTestEvent(data) {
+        // Handle live market test WebSocket events
+        console.log('🚀 Live Market Test Event:', data);
+        
+        // Add to activity log with special formatting
+        const timestamp = new Date(data.timestamp).toLocaleTimeString();
+        const step = data.step || 'unknown';
+        const message = data.message || 'No message';
+        
+        // Color coding based on step
+        let logClass = 'info';
+        if (step === 'error' || step === 'data_error' || step === 'symbol_error') {
+            logClass = 'error';
+        } else if (step === 'data_success' || step === 'completed') {
+            logClass = 'success';
+        } else if (step === 'live_update') {
+            logClass = 'update';
+        }
+        
+        this.addActivityLog(`[${step.toUpperCase()}] ${message}`, logClass);
+        
+        // Show detailed data if available
+        if (data.data) {
+            const dataStr = JSON.stringify(data.data, null, 2);
+            console.log('📊 Live Market Data:', data.data);
+            
+            // Add data details to log for key steps
+            if (step === 'data_success') {
+                this.addActivityLog(`📊 ${data.data.symbol}: ₹${data.data.latest_close} (${data.data.data_points} days, Vol: ${data.data.latest_volume})`, 'data');
+            } else if (step === 'live_update') {
+                this.addActivityLog(`📈 Update #${data.data.update_number}: ₹${data.data.simulated_price} (was ₹${data.data.original_close})`, 'update');
+            }
+        }
+        
+        // Show summary for completion
+        if (step === 'completed' && data.summary) {
+            const summary = data.summary;
+            this.addActivityLog(`✅ Test Summary: ${summary.total_updates} updates in ${summary.duration}s - WebSocket: ${summary.websocket_status}`, 'success');
+        }
+        
+        // Update progress bar if needed
+        if (step === 'live_update' && data.data) {
+            const updateNum = data.data.update_number || 0;
+            const progressPercent = Math.min((updateNum / 10) * 100, 100); // Max 10 updates
+            this.updateProgressBar('Live Market Test', progressPercent, `Update ${updateNum}/10`);
+        }
     }
 
     exportAlerts() {
