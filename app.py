@@ -1356,6 +1356,44 @@ def debug_instruments():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/debug/files')
+def debug_files():
+    """Debug endpoint to check what files exist on Railway"""
+    try:
+        import os
+        import glob
+        
+        # Check current directory
+        cwd = os.getcwd()
+        
+        # List key files
+        files_check = {
+            'cache_manager.py': os.path.exists('cache_manager.py'),
+            'scanners/': os.path.exists('scanners'),
+            'scanners/__init__.py': os.path.exists('scanners/__init__.py'),
+            'scanners/monthly_levels.py': os.path.exists('scanners/monthly_levels.py'),
+            'current_directory': cwd,
+            'directory_contents': os.listdir('.'),
+            'scanners_contents': os.listdir('scanners') if os.path.exists('scanners') else 'NOT_FOUND'
+        }
+        
+        # Try import test
+        try:
+            import cache_manager
+            files_check['cache_manager_import'] = 'SUCCESS'
+        except Exception as e:
+            files_check['cache_manager_import'] = f'FAILED: {str(e)}'
+            
+        try:
+            from scanners.monthly_levels import MonthlyLevelCalculator
+            files_check['monthly_levels_import'] = 'SUCCESS'
+        except Exception as e:
+            files_check['monthly_levels_import'] = f'FAILED: {str(e)}'
+        
+        return jsonify(files_check)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/debug/equity-mapping')
 def debug_equity_mapping():
     """Debug endpoint to test equity instrument loading"""
