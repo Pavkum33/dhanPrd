@@ -230,6 +230,9 @@ except ImportError as e:
     # Debug: List available methods
     logger.info(f"Railway cache_manager methods: {[method for method in dir(cache_manager) if not method.startswith('_')]}")
     logger.info(f"Railway level_calculator methods: {[method for method in dir(level_calculator) if not method.startswith('_')]}")
+    
+    # Debug Flask route registration
+    logger.info(f"Flask routes registered: {[rule.rule for rule in app.url_map.iter_rules() if '/api/levels/' in rule.rule]}")
 except Exception as e:
     logger.error(f"Failed to initialize multi-scan modules: {e}")
     MULTI_SCAN_AVAILABLE = False
