@@ -48,15 +48,31 @@ cache_manager = None
 level_calculator = None
 
 try:
+    # Add debug info for Railway deployment
+    import sys
+    logger.info(f"Python path: {sys.path}")
+    logger.info(f"Current working directory: {os.getcwd()}")
+    
     from cache_manager import CacheManager
+    logger.info("CacheManager imported successfully")
+    
     from scanners.monthly_levels import MonthlyLevelCalculator
+    logger.info("MonthlyLevelCalculator imported successfully")
     
     cache_manager = CacheManager()
+    logger.info("CacheManager initialized")
+    
     level_calculator = MonthlyLevelCalculator(cache_manager)
+    logger.info("MonthlyLevelCalculator initialized")
+    
     MULTI_SCAN_AVAILABLE = True
     logger.info("Real multi-scan modules loaded successfully")
 except ImportError as e:
-    logger.warning(f"Multi-scan modules not available: {e}")
+    logger.error(f"Multi-scan module import failed: {e}")
+    logger.error(f"Python path: {sys.path}")
+    logger.error(f"Available files: {os.listdir('.')}")
+    if os.path.exists('scanners'):
+        logger.error(f"Scanners dir contents: {os.listdir('scanners')}")
     MULTI_SCAN_AVAILABLE = False
     cache_manager = None
     level_calculator = None
