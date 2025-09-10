@@ -1910,13 +1910,19 @@ def init_app():
     client_id = os.getenv('DHAN_CLIENT_ID')
     access_token = os.getenv('DHAN_ACCESS_TOKEN')
     
-    if client_id and access_token:
+    # Disable background scanner for Railway to prevent resource conflicts with UI fetch
+    railway_mode = os.getenv('RAILWAY_ENVIRONMENT') or os.getenv('PORT')  # Railway indicators
+    
+    if client_id and access_token and not railway_mode:
         print("Starting background scanner thread...")
         scanner_thread = threading.Thread(target=run_scanner_background, daemon=True)
         scanner_thread.start()
         time.sleep(2)  # Give scanner time to initialize
     else:
-        print("Running in demo mode - add DHAN credentials for live scanning")
+        if railway_mode:
+            print("Railway mode: Background scanner disabled - use UI 'Fetch Historical' button")
+        else:
+            print("Running in demo mode - add DHAN credentials for live scanning")
 
 # Initialize when module loads
 init_app()
