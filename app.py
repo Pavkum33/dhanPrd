@@ -199,14 +199,37 @@ except ImportError as e:
             ]
         
         def get_symbols_near_pivot(self, symbols, current_prices, month):
-            """Get symbols near monthly pivot (placeholder for Railway)"""
-            return []
+            """Get symbols near monthly pivot (Railway-compatible)"""
+            results = []
+            for symbol in symbols:
+                current_price = current_prices.get(symbol, 0)
+                if current_price > 0:
+                    # Get cached levels for this symbol
+                    cache_key = f"levels:{symbol}:{month}"
+                    levels = self.cache.get(cache_key)
+                    if levels and 'pivots' in levels:
+                        pivot = levels['pivots']['pivot']
+                        # Check proximity (1% below to 0.1% above pivot)
+                        lower_range = pivot * 0.99
+                        upper_range = pivot * 1.001
+                        if lower_range <= current_price <= upper_range:
+                            results.append({
+                                'symbol': symbol,
+                                'current_price': current_price,
+                                'pivot_level': pivot,
+                                'distance_percent': ((current_price - pivot) / pivot) * 100
+                            })
+            return results
     
     # Initialize Railway-compatible versions
     cache_manager = RailwayCacheManager()
     level_calculator = RailwayMonthlyLevelCalculator(cache_manager)
     MULTI_SCAN_AVAILABLE = True
     logger.info("Railway-compatible multi-scan modules loaded successfully")
+    
+    # Debug: List available methods
+    logger.info(f"Railway cache_manager methods: {[method for method in dir(cache_manager) if not method.startswith('_')]}")
+    logger.info(f"Railway level_calculator methods: {[method for method in dir(level_calculator) if not method.startswith('_')]}")
 except Exception as e:
     logger.error(f"Failed to initialize multi-scan modules: {e}")
     MULTI_SCAN_AVAILABLE = False
@@ -1807,7 +1830,12 @@ def get_symbol_levels(symbol):
 def get_narrow_cpr_symbols():
     """Get all symbols with narrow CPR for current month"""
     try:
+        logger.info(f"🔍 Narrow CPR endpoint called - MULTI_SCAN_AVAILABLE: {MULTI_SCAN_AVAILABLE}")
+        logger.info(f"🔍 cache_manager available: {cache_manager is not None}")
+        logger.info(f"🔍 level_calculator available: {level_calculator is not None}")
+        
         if not MULTI_SCAN_AVAILABLE or not cache_manager:
+            logger.error(f"❌ Multi-scan not available: MULTI_SCAN_AVAILABLE={MULTI_SCAN_AVAILABLE}, cache_manager={cache_manager is not None}")
             return jsonify({
                 'error': 'Multi-scan modules not available',
                 'message': 'Cache manager or monthly levels calculator not loaded'
