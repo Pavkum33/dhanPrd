@@ -1550,6 +1550,135 @@ def debug_files():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/debug/fetch-test')
+def debug_fetch_test():
+    """Debug endpoint to test simplified historical fetch and log each step"""
+    try:
+        import asyncio
+        from datetime import datetime
+        
+        debug_logs = []
+        
+        def log_step(message):
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            log_entry = f"[{timestamp}] {message}"
+            debug_logs.append(log_entry)
+            logger.info(log_entry)
+        
+        async def test_fetch():
+            client_id = os.getenv('DHAN_CLIENT_ID')
+            access_token = os.getenv('DHAN_ACCESS_TOKEN')
+            
+            log_step("🔍 Starting simplified fetch test")
+            log_step(f"Environment: {'Railway' if os.getenv('PORT') else 'Local'}")
+            log_step(f"Credentials: {'Available' if client_id and access_token else 'Missing'}")
+            
+            if not client_id or not access_token:
+                log_step("❌ STOPPED: No DHAN credentials")
+                return debug_logs
+            
+            log_step("✅ STEP 1: Credentials OK")
+            
+            try:
+                # Test DhanHistoricalFetcher initialization
+                log_step("🔄 STEP 2: Creating DhanHistoricalFetcher...")
+                async with DhanHistoricalFetcher(client_id, access_token) as fetcher:
+                    log_step("✅ STEP 2: DhanHistoricalFetcher created successfully")
+                    
+                    # Test instrument fetching
+                    log_step("🔄 STEP 3: Fetching instrument master...")
+                    instruments_df = await fetcher.get_instruments()
+                    
+                    if instruments_df.empty:
+                        log_step("❌ STEP 3: Instrument fetch FAILED")
+                        return debug_logs
+                    
+                    log_step(f"✅ STEP 3: Got {len(instruments_df)} instruments")
+                    
+                    # Test F&O filtering
+                    log_step("🔄 STEP 4: Filtering F&O futures...")
+                    fno_df = fetcher.get_active_fno_futures(instruments_df)
+                    
+                    if fno_df.empty:
+                        log_step("❌ STEP 4: F&O filtering FAILED")
+                        return debug_logs
+                        
+                    log_step(f"✅ STEP 4: Got {len(fno_df)} F&O futures")
+                    
+                    # Test equity mapping
+                    log_step("🔄 STEP 5: Loading equity instruments...")
+                    equity_mapping = await fetcher.load_equity_instruments()
+                    
+                    if not equity_mapping:
+                        log_step("❌ STEP 5: Equity mapping FAILED")
+                        return debug_logs
+                        
+                    log_step(f"✅ STEP 5: Got {len(equity_mapping)} equity mappings")
+                    
+                    # Test single historical data fetch
+                    log_step("🔄 STEP 6: Testing single historical data fetch...")
+                    
+                    # Try RELIANCE as a safe test
+                    test_symbol = "RELIANCE"
+                    security_id = equity_mapping.get(test_symbol)
+                    
+                    if not security_id:
+                        log_step(f"❌ STEP 6: No securityId for {test_symbol}")
+                        # Try first available symbol
+                        test_symbol = list(equity_mapping.keys())[0]
+                        security_id = equity_mapping[test_symbol]
+                        log_step(f"🔄 STEP 6: Trying {test_symbol} instead (securityId: {security_id})")
+                    
+                    log_step(f"🔄 STEP 6: Fetching {test_symbol} historical data (securityId: {security_id})...")
+                    
+                    # Add timeout to prevent hanging
+                    try:
+                        hist_df = await asyncio.wait_for(
+                            fetcher.get_historical_data_for_underlying(test_symbol, security_id, days=10),
+                            timeout=30.0  # 30 second timeout
+                        )
+                        
+                        if hist_df.empty:
+                            log_step(f"❌ STEP 6: No historical data for {test_symbol}")
+                        else:
+                            log_step(f"✅ STEP 6: Got {len(hist_df)} days of data for {test_symbol}")
+                            log_step(f"📊 Sample: Close prices {hist_df['close'].tail(3).tolist()}")
+                            
+                    except asyncio.TimeoutError:
+                        log_step(f"⏰ STEP 6: TIMEOUT after 30s fetching {test_symbol}")
+                    except Exception as e:
+                        log_step(f"❌ STEP 6: ERROR fetching {test_symbol}: {str(e)}")
+                    
+                    log_step("🎉 FETCH TEST COMPLETED")
+                    
+            except Exception as e:
+                log_step(f"💥 CRITICAL ERROR: {str(e)}")
+                import traceback
+                log_step(f"📍 Traceback: {traceback.format_exc()}")
+            
+            return debug_logs
+        
+        # Run the async test
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result_logs = loop.run_until_complete(test_fetch())
+        loop.close()
+        
+        return jsonify({
+            'test_completed': True,
+            'environment': 'Railway' if os.getenv('PORT') else 'Local',
+            'timestamp': datetime.now().isoformat(),
+            'total_steps': len(result_logs),
+            'logs': result_logs
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'test_completed': False,
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
 @app.route('/api/debug/equity-mapping')
 def debug_equity_mapping():
     """Debug endpoint to test equity instrument loading"""
