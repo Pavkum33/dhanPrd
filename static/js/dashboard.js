@@ -109,6 +109,7 @@ class DhanScanner {
         document.getElementById('stopScanner').addEventListener('click', () => this.stopScanner());
         document.getElementById('refreshData').addEventListener('click', () => this.refreshData());
         document.getElementById('fetchHistorical').addEventListener('click', () => this.fetchHistoricalData());
+        document.getElementById('testWebSocket').addEventListener('click', () => this.testLiveMarketWebSocket());
 
         // Filters
         document.getElementById('applyFilters').addEventListener('click', () => this.applyFilters());
@@ -317,6 +318,47 @@ class DhanScanner {
         
         this.socket.emit('update_filters', filters);
         this.showNotification('Filters Applied', 'Scanner filters have been updated');
+    }
+
+    testLiveMarketWebSocket() {
+        // Test live market WebSocket functionality with RELIANCE
+        const btn = document.getElementById('testWebSocket');
+        btn.disabled = true;
+        btn.textContent = 'Testing...';
+        
+        this.addActivityLog('🚀 Starting live market WebSocket test for RELIANCE...', 'info');
+        
+        // Call the API endpoint
+        fetch('/api/websocket/live-market-test', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                symbol: 'RELIANCE',
+                duration: 20  // 20 second test
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log('Live Market Test Response:', data);
+            this.addActivityLog(`📡 ${data.message || 'Test started'}`, 'success');
+            this.addActivityLog(`📊 WebSocket events: ${data.websocket_events || 'live_market_test'}`, 'info');
+            this.addActivityLog(`⏱️ Duration: ${data.duration || '20 seconds'}`, 'info');
+            
+            // Re-enable button after 25 seconds
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = 'Live Market Test';
+                this.addActivityLog('✅ Live market test completed!', 'success');
+            }, 25000);
+        })
+        .catch(error => {
+            console.error('Live Market Test Error:', error);
+            this.addActivityLog(`❌ Test failed: ${error.message}`, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Live Market Test';
+        });
     }
 
     updateScannerTable(data) {
