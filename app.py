@@ -233,6 +233,66 @@ except ImportError as e:
     
     # Debug Flask route registration
     logger.info(f"Flask routes registered: {[rule.rule for rule in app.url_map.iter_rules() if '/api/levels/' in rule.rule]}")
+    
+    # Force route registration for Railway compatibility
+    logger.info("🔄 Forcing route registration for Railway...")
+    
+    # Register narrow-cpr route manually
+    if not any('/api/levels/narrow-cpr' in rule.rule for rule in app.url_map.iter_rules()):
+        @app.route('/api/levels/narrow-cpr-railway')
+        def railway_narrow_cpr():
+            """Railway-specific narrow CPR endpoint"""
+            try:
+                logger.info("🚂 Railway narrow CPR endpoint called")
+                if not level_calculator:
+                    return jsonify({'error': 'Level calculator not available'}), 500
+                
+                month = request.args.get('month', datetime.now().strftime('%Y-%m'))
+                narrow_symbols = level_calculator.get_symbols_with_narrow_cpr()
+                
+                return jsonify({
+                    'narrow_cpr_symbols': narrow_symbols,
+                    'count': len(narrow_symbols),
+                    'month': month,
+                    'message': f'Found {len(narrow_symbols)} symbols with narrow CPR'
+                })
+            except Exception as e:
+                logger.error(f"Railway narrow CPR error: {e}")
+                return jsonify({'error': str(e)}), 500
+                
+        logger.info("✅ Railway narrow CPR route registered manually")
+    
+    # Register test route manually  
+    if not any('/api/levels/test' in rule.rule for rule in app.url_map.iter_rules()):
+        @app.route('/api/levels/test-railway', methods=['POST'])
+        def railway_test_calculation():
+            """Railway-specific test calculation endpoint"""
+            try:
+                logger.info("🚂 Railway test calculation endpoint called")
+                if not level_calculator:
+                    return jsonify({'error': 'Level calculator not available'}), 500
+                    
+                data = request.get_json() or {}
+                test_ohlc = data.get('ohlc', {'high': 3125.00, 'low': 2875.00, 'close': 3050.00})
+                symbol = data.get('symbol', 'TEST_SYMBOL')
+                
+                levels = level_calculator.calculate_and_cache_symbol_levels(symbol, test_ohlc, 'test-month')
+                
+                return jsonify({
+                    'message': 'Railway test calculation completed',
+                    'calculated_levels': levels,
+                    'input_data': {'symbol': symbol, 'ohlc': test_ohlc},
+                    'timestamp': datetime.now().isoformat()
+                })
+            except Exception as e:
+                logger.error(f"Railway test calculation error: {e}")
+                return jsonify({'error': str(e)}), 500
+                
+        logger.info("✅ Railway test calculation route registered manually")
+    
+    # Final route check
+    railway_routes = [rule.rule for rule in app.url_map.iter_rules() if 'railway' in rule.rule.lower()]
+    logger.info(f"✅ Railway-specific routes: {railway_routes}")
 except Exception as e:
     logger.error(f"Failed to initialize multi-scan modules: {e}")
     MULTI_SCAN_AVAILABLE = False
