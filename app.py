@@ -42,55 +42,26 @@ except ImportError:
     HAS_DHAN_SDK = False
     logger.warning("dhanhq SDK not available - using REST API fallback")
 
-# Import multi-scan modules at startup to avoid route registration issues
+# Import real multi-scan modules
 MULTI_SCAN_AVAILABLE = False
 cache_manager = None
 level_calculator = None
 
-# Check if files exist first
-import os
-if os.path.exists('cache_manager.py'):
-    logger.info("cache_manager.py file exists")
-else:
-    logger.error("cache_manager.py file NOT found")
-    
-if os.path.exists('scanners'):
-    logger.info("scanners directory exists")
-    if os.path.exists('scanners/monthly_levels.py'):
-        logger.info("scanners/monthly_levels.py file exists")
-    else:
-        logger.error("scanners/monthly_levels.py file NOT found")
-else:
-    logger.error("scanners directory NOT found")
-
 try:
     from cache_manager import CacheManager
-    logger.info("CacheManager module imported")
-    
     from scanners.monthly_levels import MonthlyLevelCalculator
-    logger.info("MonthlyLevelCalculator module imported")
     
-    # Initialize global instances
     cache_manager = CacheManager()
-    logger.info("CacheManager instance created")
-    
     level_calculator = MonthlyLevelCalculator(cache_manager)
-    logger.info("MonthlyLevelCalculator instance created")
-    
     MULTI_SCAN_AVAILABLE = True
-    logger.info("Multi-scan modules loaded successfully")
-    
+    logger.info("Real multi-scan modules loaded successfully")
 except ImportError as e:
-    logger.error(f"Multi-scan module import failed: {e}")
-    import traceback
-    logger.error(traceback.format_exc())
+    logger.warning(f"Multi-scan modules not available: {e}")
     MULTI_SCAN_AVAILABLE = False
     cache_manager = None
     level_calculator = None
 except Exception as e:
-    logger.error(f"Multi-scan module initialization failed: {e}")
-    import traceback
-    logger.error(traceback.format_exc())
+    logger.error(f"Failed to initialize multi-scan modules: {e}")
     MULTI_SCAN_AVAILABLE = False
     cache_manager = None
     level_calculator = None
@@ -1549,8 +1520,11 @@ def get_narrow_cpr_symbols():
 def get_symbols_near_pivot():
     """Get symbols currently trading near monthly pivot"""
     try:
-        from cache_manager import CacheManager
-        from scanners.monthly_levels import MonthlyLevelCalculator
+        if not MULTI_SCAN_AVAILABLE or not cache_manager or not level_calculator:
+            return jsonify({
+                'error': 'Multi-scan modules not available',
+                'message': 'Cache manager or monthly levels calculator not loaded'
+            }), 500
         
         # Get current prices from request body
         data = request.get_json() or {}
@@ -1560,13 +1534,10 @@ def get_symbols_near_pivot():
         if not current_prices:
             return jsonify({'error': 'current_prices required in request body'}), 400
         
-        cache = CacheManager()
-        calculator = MonthlyLevelCalculator(cache)
-        
         month = request.args.get('month', datetime.now().strftime('%Y-%m'))
         
         # Get symbols near pivot
-        near_pivot_symbols = calculator.get_symbols_near_pivot(symbols, current_prices, month)
+        near_pivot_symbols = level_calculator.get_symbols_near_pivot(symbols, current_prices, month)
         
         # Emit WebSocket event for real-time updates
         socketio.emit('pivot_results', {
@@ -1592,8 +1563,13 @@ def get_symbols_near_pivot():
 def get_premarket_summary():
     """Get latest pre-market job execution summary"""
     try:
-        from premarket_job import PremarketJob
+        if not MULTI_SCAN_AVAILABLE:
+            return jsonify({
+                'error': 'Multi-scan modules not available',
+                'message': 'Premarket job not available'
+            }), 500
         
+        from premarket_job import PremarketJob
         job = PremarketJob()
         
         # Get latest results
@@ -1617,8 +1593,11 @@ def get_premarket_summary():
 def test_level_calculation():
     """Test monthly level calculation with sample data"""
     try:
-        from cache_manager import CacheManager
-        from scanners.monthly_levels import MonthlyLevelCalculator
+        if not MULTI_SCAN_AVAILABLE or not level_calculator:
+            return jsonify({
+                'error': 'Multi-scan modules not available',
+                'message': 'Monthly levels calculator not loaded'
+            }), 500
         
         # Get test data from request
         data = request.get_json() or {}
@@ -1633,11 +1612,8 @@ def test_level_calculation():
         
         symbol = data.get('symbol', 'TEST_SYMBOL')
         
-        cache = CacheManager()
-        calculator = MonthlyLevelCalculator(cache)
-        
         # Calculate levels
-        levels = calculator.calculate_and_cache_symbol_levels(
+        levels = level_calculator.calculate_and_cache_symbol_levels(
             symbol,
             test_ohlc,
             'test-month'
