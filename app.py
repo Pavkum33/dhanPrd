@@ -68,8 +68,9 @@ except Exception as e:
 
 # Import DhanHistoricalFetcher from external module if available
 try:
-    from dhan_fetcher import DhanHistoricalFetcher
-    logger.info("Using external DhanHistoricalFetcher from dhan_fetcher.py")
+    # Temporarily disable external import to fix hanging issue
+    # from dhan_fetcher import DhanHistoricalFetcher
+    raise ImportError("Using built-in DhanHistoricalFetcher for stability")
 except ImportError:
     logger.info("Using built-in DhanHistoricalFetcher")
     # Will use the class defined below
