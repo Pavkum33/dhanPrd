@@ -806,8 +806,13 @@ class BreakoutAnalyzer:
         
         return analysis
 
-async def fetch_and_analyze_historical_data(fetch_days: int = 75, lookback_period: int = 50, ema_short: int = 8, ema_long: int = 13, volume_factor: float = 0.5, price_threshold: float = 50):
-    """Main function to fetch and analyze historical data with progress updates"""
+async def fetch_and_analyze_historical_data(fetch_days: int = 75, lookback_period: int = 50, ema_short: int = 8, ema_long: int = 13, volume_factor: float = 0.5, price_threshold: float = 50, max_concurrent: int = 8, max_retries: int = 4):
+    """
+    Parallelized fetch + analysis of historical data for all F&O underlyings.
+    Includes retry logic with exponential backoff for rate-limit and empty response errors.
+    """
+    import random
+    
     client_id = os.getenv('DHAN_CLIENT_ID')
     access_token = os.getenv('DHAN_ACCESS_TOKEN')
     
@@ -829,9 +834,10 @@ async def fetch_and_analyze_historical_data(fetch_days: int = 75, lookback_perio
             emit_progress('error', 'Dhan credentials not found in environment variables')
             return {}
         
-        emit_progress('starting', f'Starting historical data fetch... (Fetch: {fetch_days} days, Analysis: {lookback_period} days)')
+        emit_progress('starting', f'Starting parallelized historical fetch... (Fetch: {fetch_days} days, Analysis: {lookback_period} days, Concurrent: {max_concurrent}, Retries: {max_retries})')
         
         async with DhanHistoricalFetcher(client_id, access_token) as fetcher:
+            # 1. Load instrument master
             emit_progress('instruments', 'Fetching instrument master from Dhan...')
             instruments_df = await fetcher.get_instruments()
             
@@ -846,155 +852,161 @@ async def fetch_and_analyze_historical_data(fetch_days: int = 75, lookback_perio
                 emit_progress('error', 'No active F&O futures found in instrument master')
                 return {}
             
-            # Prepare securities list using standard CSV columns (process ALL F&O futures)
-            securities = []
-            
-            logger.info(f"Building securities from {len(fno_df)} active F&O futures...")
-            
-            for _, row in fno_df.iterrows():
-                try:
-                    # Extract required fields from standard CSV format
-                    security_id = int(row['SecurityId'])
-                    trading_symbol = str(row['TradingSymbol'])
-                    exchange_segment = int(row['ExchangeSegment'])
-                    instrument_type = str(row['InstrumentType'])
-                    
-                    # Debug: Show what we're extracting
-                    logger.info(f"Extracted: securityId={security_id}, symbol={trading_symbol}, segment={exchange_segment}, type={instrument_type}")
-                    
-                    securities.append({
-                        'security_id': str(security_id),  # Keep as string for consistency 
-                        'symbol': trading_symbol,         # Use trading symbol for display
-                        'exchange_segment': exchange_segment,
-                        'instrument_type': instrument_type
-                    })
-                    
-                except Exception as e:
-                    logger.warning(f"Error extracting security data from row: {e}")
-                    logger.warning(f"Available columns: {list(row.index)}")
-                    continue
-            
-            total_securities = len(securities)
-            emit_progress('prepared', f'Prepared {total_securities} F&O securities for analysis', 0, total_securities)
-            
-            # Load NSE equity instruments for securityId resolution
-            emit_progress('loading_instruments', 'Loading NSE equity instrument master...', 0, total_securities)
+            # 2. Load equity mapping
+            emit_progress('loading_equity', 'Loading equity instruments for mapping...')
             equity_mapping = await fetcher.load_equity_instruments()
             
             if not equity_mapping:
                 emit_progress('error', 'Failed to load equity instruments - cannot resolve securityIds')
                 return {}
             
-            emit_progress('instruments_loaded', f'Loaded {len(equity_mapping)} equity instruments for securityId mapping', 0, total_securities)
+            # 3. Build underlying symbols list (deduplicated)
+            underlying_symbols = set()
+            for _, row in fno_df.iterrows():
+                try:
+                    future_symbol = str(row['TradingSymbol'])
+                    underlying_symbol = fetcher.extract_underlying_symbol(future_symbol)
+                    
+                    # Check if we can map to equity
+                    security_id = equity_mapping.get(underlying_symbol)
+                    if security_id:
+                        underlying_symbols.add((underlying_symbol, security_id))
+                        
+                except Exception as e:
+                    logger.warning(f"Error processing F&O row: {e}")
+                    continue
             
-            # Fetch historical data with rate limiting and deduplication
-            analyzed_data = {}
-            processed_underlyings = set()  # Track processed underlying symbols to avoid duplicates
-            # Use passed configuration parameters
+            underlying_list = list(underlying_symbols)
+            total_symbols = len(underlying_list)
+            emit_progress('prepared', f'Prepared {total_symbols} unique underlying symbols for parallel fetch', 0, total_symbols)
             
+            # 4. Setup parallel processing with retry logic
             analyzer = BreakoutAnalyzer(lookback=lookback_period, ema_short=ema_short, ema_long=ema_long)
+            semaphore = asyncio.Semaphore(max_concurrent)
             successful_fetches = 0
             failed_fetches = 0
-            skipped_duplicates = 0
             
-            # Process ALL F&O stocks (removed liquid stock filtering)
-            for i, sec_info in enumerate(securities):
-                try:
-                    future_symbol = sec_info['symbol']  # e.g., ADANIPORTS-Sep2025-FUT
-                    underlying_symbol = fetcher.extract_underlying_symbol(future_symbol)  # e.g., ADANIPORTS
+            async def fetch_with_retry(underlying_symbol, security_id):
+                """Fetch historical data with retry + exponential backoff"""
+                delay = 1
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        # Add jitter to spread load
+                        await asyncio.sleep(random.uniform(0.1, 0.4))
+                        
+                        df = await fetcher.get_historical_data_for_underlying(
+                            underlying_symbol, security_id, days=fetch_days
+                        )
+                        
+                        if not df.empty:
+                            logger.info(f"✅ {underlying_symbol}: Got {len(df)} days on attempt {attempt}")
+                            return df
+                        else:
+                            logger.warning(f"⚠️ {underlying_symbol}: Empty data (attempt {attempt}/{max_retries})")
+                            
+                    except Exception as e:
+                        logger.error(f"❌ {underlying_symbol}: Error on attempt {attempt}/{max_retries}: {e}")
                     
-                    # Skip if we've already processed this underlying symbol
-                    if underlying_symbol in processed_underlyings:
-                        skipped_duplicates += 1
-                        logger.debug(f"Skipping duplicate underlying: {underlying_symbol}")
-                        continue
-                    
-                    # Mark as processed
-                    processed_underlyings.add(underlying_symbol)
-                    
-                    # Resolve securityId from equity mapping (THE KEY FIX!)
-                    security_id = equity_mapping.get(underlying_symbol)
-                    if not security_id:
-                        failed_fetches += 1
-                        emit_progress('failed_symbol', f'❌ {underlying_symbol}: securityId not found in equity master', 
-                                    i + 1, total_securities, {
-                            'symbol': underlying_symbol,
-                            'successful': successful_fetches,
-                            'failed': failed_fetches
-                        })
-                        continue
-                    
-                    emit_progress('fetching', f'Fetching historical data for {underlying_symbol} (securityId: {security_id})...', i + 1, total_securities, {
+                    if attempt < max_retries:
+                        logger.info(f"🔄 Retrying {underlying_symbol} after {delay}s...")
+                        await asyncio.sleep(delay)
+                        delay *= 2  # Exponential backoff: 1s → 2s → 4s → 8s
+                
+                logger.error(f"💥 {underlying_symbol}: Failed after {max_retries} attempts")
+                return pd.DataFrame()
+            
+            async def process_symbol(symbol_data, index):
+                """Process single symbol with semaphore control"""
+                underlying_symbol, security_id = symbol_data
+                
+                async with semaphore:
+                    emit_progress('fetching', f'[{index+1}/{total_symbols}] Fetching {underlying_symbol}...', 
+                                index + 1, total_symbols, {
                         'current_symbol': underlying_symbol,
                         'successful': successful_fetches,
                         'failed': failed_fetches
                     })
                     
-                    # Enhanced rate limiting for larger volume processing
-                    if i > 0 and i % 10 == 0:  # Longer pause every 10 requests
-                        await asyncio.sleep(2.0)
-                    else:
-                        await asyncio.sleep(0.5)  # Standard rate limiting
-                    # Fetch underlying equity data using numeric securityId (the correct approach!)
-                    df = await fetcher.get_historical_data_for_underlying(underlying_symbol, security_id, days=fetch_days)
+                    # Fetch with retry logic
+                    df = await fetch_with_retry(underlying_symbol, security_id)
                     
-                    if not df.empty:
-                        emit_progress('analyzing', f'Analyzing {underlying_symbol} ({len(df)} days of data)...', i + 1, total_securities)
-                        
-                        analyzed_df = analyzer.calculate_technical_indicators(df, volume_factor=volume_factor, price_threshold=price_threshold)
-                        current_analysis = analyzer.get_current_analysis(analyzed_df)
-                        current_analysis['symbol'] = underlying_symbol  # Use underlying symbol for display
-                        current_analysis['future_symbol'] = future_symbol  # Keep future contract name
-                        current_analysis['security_id'] = sec_info['security_id']
-                        
-                        analyzed_data[sec_info['security_id']] = {
-                            'symbol': underlying_symbol,  # Display underlying symbol
-                            'future_symbol': future_symbol,  # Keep future contract reference
-                            'historical_data': analyzed_df,
-                            'current_analysis': current_analysis
-                        }
-                        
-                        successful_fetches += 1
-                        
-                        # Check for breakout signal
-                        signal_status = "BREAKOUT" if current_analysis['breakout_signal'] else "No Signal"
-                        emit_progress('completed_symbol', f'✅ {underlying_symbol}: Close={current_analysis["close"]:.2f}, {signal_status}', 
-                                    i + 1, total_securities, {
-                            'symbol': underlying_symbol,
-                            'close': current_analysis['close'],
-                            'signal': current_analysis['breakout_signal'],
-                            'successful': successful_fetches,
-                            'failed': failed_fetches
-                        })
-                    else:
-                        failed_fetches += 1
-                        emit_progress('failed_symbol', f'⚠️  {underlying_symbol}: No historical data (normal for illiquid/new stocks)', 
-                                    i + 1, total_securities, {
-                            'symbol': underlying_symbol,
-                            'successful': successful_fetches,
-                            'failed': failed_fetches
-                        })
+                    if df.empty:
+                        logger.warning(f"⚠️ {underlying_symbol}: No historical data after {max_retries} attempts")
+                        return None
                     
-                except Exception as e:
-                    failed_fetches += 1
-                    emit_progress('error_symbol', f'❌ {underlying_symbol}: Error - {str(e)[:50]}...', 
-                                i + 1, total_securities, {
+                    # Analyze the data
+                    analyzed_df = analyzer.calculate_technical_indicators(df, volume_factor=volume_factor, price_threshold=price_threshold)
+                    current_analysis = analyzer.get_current_analysis(analyzed_df)
+                    current_analysis['symbol'] = underlying_symbol
+                    current_analysis['security_id'] = str(security_id)
+                    
+                    # Check for breakout
+                    is_breakout = current_analysis['breakout_signal']
+                    signal_status = "BREAKOUT" if is_breakout else "No Signal"
+                    
+                    emit_progress('completed_symbol', f'✅ {underlying_symbol}: Close={current_analysis["close"]:.2f}, {signal_status}', 
+                                index + 1, total_symbols, {
                         'symbol': underlying_symbol,
-                        'error': str(e),
-                        'successful': successful_fetches,
+                        'close': current_analysis['close'],
+                        'signal': is_breakout,
+                        'successful': successful_fetches + 1,
                         'failed': failed_fetches
                     })
+                    
+                    if is_breakout:
+                        logger.info(f"🚀 BREAKOUT: {underlying_symbol} Close={current_analysis['close']:.2f}, Resistance={current_analysis['resistance']:.2f}")
+                    else:
+                        logger.info(f"📊 {underlying_symbol}: No breakout (Close={current_analysis['close']:.2f}, Resistance={current_analysis['resistance']:.2f})")
+                    
+                    return {
+                        'symbol': underlying_symbol,
+                        'security_id': str(security_id),
+                        'historical_data': analyzed_df,
+                        'current_analysis': current_analysis
+                    }
             
+            # 5. Launch parallel tasks
+            emit_progress('parallel_start', f'Starting parallel fetch with {max_concurrent} concurrent connections...')
+            
+            tasks = [asyncio.create_task(process_symbol(symbol_data, i)) 
+                    for i, symbol_data in enumerate(underlying_list)]
+            
+            # Process in batches to avoid memory issues on Railway
+            batch_size = 50  # Process 50 symbols at a time
+            analyzed_data = {}
+            
+            for batch_start in range(0, len(tasks), batch_size):
+                batch_end = min(batch_start + batch_size, len(tasks))
+                batch_tasks = tasks[batch_start:batch_end]
+                
+                emit_progress('batch_processing', f'Processing batch {batch_start//batch_size + 1} ({len(batch_tasks)} symbols)...')
+                
+                # Wait for batch completion
+                batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+                
+                # Collect successful results
+                for i, result in enumerate(batch_results):
+                    if isinstance(result, Exception):
+                        failed_fetches += 1
+                        logger.error(f"Task failed: {result}")
+                    elif result is not None:
+                        successful_fetches += 1
+                        analyzed_data[result['security_id']] = result
+                
+                # Progress update after batch
+                emit_progress('batch_complete', f'Batch {batch_start//batch_size + 1} complete: {successful_fetches} successful, {failed_fetches} failed')
+            
+            # 6. Final summary
             breakouts_found = sum(1 for data in analyzed_data.values() if data['current_analysis']['breakout_signal'])
             
-            emit_progress('summary', f'Historical analysis completed: {successful_fetches} successful, {failed_fetches} failed, {skipped_duplicates} duplicates skipped', 
-                        total_securities, total_securities, {
+            emit_progress('summary', f'Parallelized analysis completed: {successful_fetches} successful, {failed_fetches} failed, {breakouts_found} breakouts found', 
+                        total_symbols, total_symbols, {
                 'total_analyzed': len(analyzed_data),
                 'successful': successful_fetches,
                 'failed': failed_fetches,
-                'skipped_duplicates': skipped_duplicates,
-                'unique_underlyings': len(processed_underlyings),
-                'breakouts_found': breakouts_found
+                'breakouts_found': breakouts_found,
+                'concurrent_used': max_concurrent,
+                'retries_per_symbol': max_retries
             })
             
             # Emit breakout results for multi-scan dashboard
@@ -1005,31 +1017,31 @@ async def fetch_and_analyze_historical_data(fetch_days: int = 75, lookback_perio
                 'completed_at': datetime.now().isoformat()
             })
             
-            # Save analyzed data to cache file for tomorrow's use
+            # Cache results
             try:
                 cache_data = {
                     'analyzed_data': analyzed_data,
                     'timestamp': datetime.now().isoformat(),
-                    'total_securities': total_securities,
+                    'total_symbols': total_symbols,
                     'successful_fetches': successful_fetches,
                     'failed_fetches': failed_fetches,
-                    'unique_underlyings': len(processed_underlyings)
+                    'breakouts_found': breakouts_found
                 }
                 
                 os.makedirs('cache', exist_ok=True)
                 with open('cache/historical_data.pkl', 'wb') as f:
                     pickle.dump(cache_data, f)
                     
-                emit_progress('cached', f'Historical data cached for future use - {len(analyzed_data)} symbols saved')
-                logger.info(f"✅ Cached {len(analyzed_data)} analyzed symbols to cache/historical_data.pkl")
+                emit_progress('cached', f'Parallelized results cached: {len(analyzed_data)} symbols saved')
+                logger.info(f"✅ Cached {len(analyzed_data)} analyzed symbols with parallelized approach")
             except Exception as cache_error:
                 logger.warning(f"Failed to cache data: {cache_error}")
             
             return analyzed_data
             
     except Exception as e:
-        emit_progress('error', f'Critical error: {str(e)}')
-        logger.exception("Critical error in historical data fetch")
+        emit_progress('error', f'Critical error in parallelized fetch: {str(e)}')
+        logger.exception("Critical error in parallelized historical data fetch")
         return {}
 
 # Global state
