@@ -190,12 +190,61 @@ except ImportError as e:
             cache_key = f"levels:{symbol}:{month}"
             return self.cache.get(cache_key)
         
-        def get_symbols_with_narrow_cpr(self):
-            """Get symbols with narrow CPR (demo data for Railway)"""
+        def get_symbols_with_narrow_cpr(self, month=None):
+            """Get symbols with narrow CPR from cached historical data"""
+            if month is None:
+                month = datetime.now().strftime('%Y-%m')
+                
+            narrow_cpr_symbols = []
+            
+            # Check if we have historical cache data
+            import os
+            cache_file = 'cache/historical_data.pkl'
+            
+            if os.path.exists(cache_file):
+                try:
+                    import pickle
+                    with open(cache_file, 'rb') as f:
+                        cache_data = pickle.load(f)
+                        
+                    analyzed_data = cache_data.get('analyzed_data', {})
+                    logger.info(f"📊 Checking {len(analyzed_data)} symbols from historical cache for narrow CPR")
+                    
+                    for symbol_data in analyzed_data.values():
+                        symbol = symbol_data.get('symbol', '')
+                        current_analysis = symbol_data.get('current_analysis', {})
+                        
+                        # Calculate CPR from current analysis if available
+                        if 'close' in current_analysis and 'high' in current_analysis and 'low' in current_analysis:
+                            high = current_analysis.get('high', 0)
+                            low = current_analysis.get('low', 0)  
+                            close = current_analysis.get('close', 0)
+                            
+                            if high > 0 and low > 0 and close > 0:
+                                cpr_data = self.calculate_monthly_cpr(high, low, close)
+                                
+                                if cpr_data['is_narrow']:
+                                    narrow_cpr_symbols.append({
+                                        'symbol': symbol,
+                                        'cpr_width': cpr_data['cpr_width'],
+                                        'pivot': cpr_data['pivot'],
+                                        'tc': cpr_data['tc'],
+                                        'bc': cpr_data['bc'],
+                                        'current_price': close
+                                    })
+                                    
+                    logger.info(f"🎯 Found {len(narrow_cpr_symbols)} symbols with narrow CPR from historical data")
+                    return narrow_cpr_symbols
+                    
+                except Exception as e:
+                    logger.error(f"Error reading historical cache: {e}")
+            
+            # Fallback to demo data if no cache
+            logger.warning("📭 No historical cache found, using demo data")
             return [
-                {'symbol': 'TCS', 'cpr_width': 0.416},
-                {'symbol': 'HDFCBANK', 'cpr_width': 0.198},
-                {'symbol': 'INFY', 'cpr_width': 0.000}
+                {'symbol': 'TCS', 'cpr_width': 0.416, 'note': 'demo_data'},
+                {'symbol': 'HDFCBANK', 'cpr_width': 0.198, 'note': 'demo_data'}, 
+                {'symbol': 'INFY', 'cpr_width': 0.000, 'note': 'demo_data'}
             ]
         
         def get_symbols_near_pivot(self, symbols, current_prices, month):
