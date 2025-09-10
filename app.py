@@ -208,7 +208,8 @@ except ImportError as e:
                         cache_data = pickle.load(f)
                         
                     analyzed_data = cache_data.get('analyzed_data', {})
-                    logger.info(f"📊 Checking {len(analyzed_data)} symbols from historical cache for narrow CPR")
+                    logger.error(f"📊 RAILWAY: Checking {len(analyzed_data)} symbols from historical cache for narrow CPR")
+                    print(f"📊 RAILWAY DEBUG: Processing {len(analyzed_data)} symbols from cache")
                     
                     for symbol_data in analyzed_data.values():
                         symbol = symbol_data.get('symbol', '')
@@ -233,14 +234,17 @@ except ImportError as e:
                                         'current_price': close
                                     })
                                     
-                    logger.info(f"🎯 Found {len(narrow_cpr_symbols)} symbols with narrow CPR from historical data")
+                    logger.error(f"🎯 RAILWAY: Found {len(narrow_cpr_symbols)} symbols with narrow CPR from historical data")
+                    print(f"🎯 RAILWAY DEBUG: Narrow CPR results: {len(narrow_cpr_symbols)} symbols")
                     return narrow_cpr_symbols
                     
                 except Exception as e:
-                    logger.error(f"Error reading historical cache: {e}")
+                    logger.error(f"❌ RAILWAY: Error reading historical cache: {e}")
+                    print(f"❌ RAILWAY DEBUG: Cache error: {e}")
             
             # Fallback to demo data if no cache
-            logger.warning("📭 No historical cache found, using demo data")
+            logger.error("📭 RAILWAY: No historical cache found, using demo data")
+            print("📭 RAILWAY DEBUG: Using demo data fallback")
             return [
                 {'symbol': 'TCS', 'cpr_width': 0.416, 'note': 'demo_data'},
                 {'symbol': 'HDFCBANK', 'cpr_width': 0.198, 'note': 'demo_data'}, 
@@ -292,12 +296,18 @@ except ImportError as e:
         def railway_narrow_cpr():
             """Railway-specific narrow CPR endpoint"""
             try:
-                logger.info("🚂 Railway narrow CPR endpoint called")
+                logger.error("🚂 Railway narrow CPR endpoint called")  # Use ERROR to ensure visibility
+                print("🚂 RAILWAY DEBUG: narrow CPR endpoint accessed")  # Also use print for Railway
+                
                 if not level_calculator:
+                    logger.error("❌ Level calculator not available")
                     return jsonify({'error': 'Level calculator not available'}), 500
                 
                 month = request.args.get('month', datetime.now().strftime('%Y-%m'))
+                print(f"🔍 RAILWAY DEBUG: Calling get_symbols_with_narrow_cpr for month {month}")
                 narrow_symbols = level_calculator.get_symbols_with_narrow_cpr()
+                print(f"🎯 RAILWAY DEBUG: Got {len(narrow_symbols)} narrow CPR symbols")
+                logger.error(f"🎯 RAILWAY: Found {len(narrow_symbols)} narrow CPR symbols")
                 
                 return jsonify({
                     'narrow_cpr_symbols': narrow_symbols,
