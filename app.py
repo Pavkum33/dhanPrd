@@ -260,19 +260,28 @@ class DhanHistoricalFetcher:
         """Fetch instrument master from Dhan (use the correct CSV for active F&O)"""
         url = "https://images.dhan.co/api-data/api-scrip-master.csv"  # Use this for active F&O
         try:
+            logger.info(f"Starting CSV download from: {url}")
             async with self.session.get(url) as response:
+                logger.info(f"Got response with status: {response.status}")
                 if response.status == 200:
+                    logger.info("Reading response content...")
                     content = await response.text()
+                    logger.info(f"Content length: {len(content)} characters")
+                    
+                    logger.info("Parsing CSV content...")
                     from io import StringIO
                     df = pd.read_csv(StringIO(content))
+                    logger.info(f"Initial CSV rows: {len(df)}")
+                    
+                    logger.info("Cleaning column names...")
                     df.columns = [c.strip() for c in df.columns]
-                    logger.info(f"Fetched {len(df)} instruments from api-scrip-master.csv")
+                    logger.info(f"✅ Successfully fetched {len(df)} instruments from api-scrip-master.csv")
                     return df
                 else:
                     logger.error(f"Failed to fetch instruments: {response.status}")
                     return pd.DataFrame()
         except Exception as e:
-            logger.exception(f"Error fetching instruments: {e}")
+            logger.exception(f"❌ Error fetching instruments: {e}")
             return pd.DataFrame()
     
     def get_active_fno_futures(self, df: pd.DataFrame) -> pd.DataFrame:
