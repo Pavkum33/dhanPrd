@@ -776,6 +776,38 @@ class DhanScanner {
                 systemUptimeElement.textContent = mainUptime.textContent;
             }
         }
+        
+        // Load existing scan data automatically
+        this.loadExistingScanData();
+    }
+    
+    async loadExistingScanData() {
+        console.log('Loading existing scan data...');
+        this.addActivityLog('Loading cached scan results...');
+        
+        // Load CPR scan data - try current month first, then fall back to cached months
+        const monthsToTry = [this.getCurrentMonth(), '2024-12', '2024-11', '2024-10'];
+        
+        for (const month of monthsToTry) {
+            try {
+                const response = await fetch('/api/levels/narrow-cpr?month=' + month);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.count > 0) {
+                        this.updateCprResults(data);
+                        this.updateScannerStatus('cprScanStatus', 'active', 'Loaded');
+                        this.updateMetric('cprLastUpdate', data.retrieved_at ? new Date(data.retrieved_at).toLocaleTimeString() : 'Cache');
+                        this.addActivityLog(`Loaded ${data.count} narrow CPR stocks from ${month} cache`);
+                        break; // Stop after finding data
+                    }
+                }
+            } catch (error) {
+                console.log(`No CPR data for ${month}:`, error.message);
+            }
+        }
+        
+        // Load other scan data as they become available
+        // TODO: Add pivot and breakout scan data loading
     }
     
     updateSystemStatus() {
@@ -867,7 +899,7 @@ class DhanScanner {
         this.updateScannerStatus('cprScanStatus', 'scanning', 'Scanning...');
         
         try {
-            const response = await fetch('/api/levels/narrow-cpr-railway?month=' + this.getCurrentMonth());
+            const response = await fetch('/api/levels/narrow-cpr?month=' + this.getCurrentMonth());
             const data = await response.json();
             
             this.updateCprResults(data);
@@ -987,7 +1019,10 @@ class DhanScanner {
     }
     
     updateCprResults(data) {
-        const detected = data.length || 0;
+        // Handle API response format: {count: 9, narrow_cpr_symbols: [...]}
+        const symbols = data.narrow_cpr_symbols || data || [];
+        const detected = data.count || symbols.length || 0;
+        
         this.updateMetric('cprDetected', detected);
         
         const resultsList = document.getElementById('cprResultsList');
@@ -1006,8 +1041,8 @@ class DhanScanner {
                 resultsList.innerHTML = '<div class="no-results">No narrow CPR stocks detected</div>';
             } else {
                 // Store raw data for filtering/sorting
-                this.cprData = data;
-                this.renderPaginatedResults('cpr', data);
+                this.cprData = symbols;
+                this.renderPaginatedResults('cpr', symbols);
                 this.setupDataControls('cpr');
             }
         }

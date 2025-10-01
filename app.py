@@ -8,6 +8,10 @@ import os
 import sys
 import json
 import sqlite3
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 import asyncio
 import pickle
 from datetime import datetime, timedelta
@@ -51,7 +55,7 @@ logger.info(f"🚀 Global in-memory cache initialized for Railway compatibility"
 
 # Optional dhanhq SDK import
 try:
-    from dhanhq import dhanhq
+    from dhanhq import DhanContext, dhanhq
     HAS_DHAN_SDK = True
     logger.info("dhanhq SDK available")
 except ImportError:
@@ -402,8 +406,9 @@ class DhanHistoricalFetcher:
         # Initialize SDK if available
         if self.use_sdk:
             try:
-                # Use direct dhanhq initialization (as per working sample)
-                self.sdk = dhanhq(client_id, access_token)
+                # Create DhanContext first, then initialize SDK
+                ctx = DhanContext(client_id, access_token)
+                self.sdk = dhanhq(ctx)
                 logger.info("Initialized dhanhq SDK for historical data")
             except Exception as e:
                 logger.warning(f"Failed to initialize dhanhq SDK: {e}, falling back to REST API")
@@ -2171,10 +2176,11 @@ def live_market_websocket_test():
             """Background task to run live market test with real data"""
             try:
                 # Import SDK
-                from dhanhq import dhanhq
-                
+                from dhanhq import DhanContext, dhanhq
+
                 # Initialize SDK
-                dhan = dhanhq(client_id, access_token)
+                ctx = DhanContext(client_id, access_token)
+                dhan = dhanhq(ctx)
                 
                 # Emit start event
                 socketio.emit('live_market_test', {

@@ -7,7 +7,12 @@ Runs scheduled tasks to fetch historical data and calculate CPR/Pivot levels
 import asyncio
 import os
 import logging
+import pandas as pd
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -86,8 +91,15 @@ class PremarketJob:
                     underlying = fetcher.extract_underlying_symbol(row[symbol_col])
                     if underlying:
                         underlying_symbols.add(underlying)
-                
+
                 logger.info(f"Processing {len(underlying_symbols)} underlying symbols")
+
+                # Step 2a: Load equity instruments to get security IDs
+                logger.info("Loading equity instrument mappings...")
+                equity_mapping = await fetcher.load_equity_instruments()
+                if not equity_mapping:
+                    raise Exception("Failed to load equity instrument mappings")
+                logger.info(f"Loaded {len(equity_mapping)} equity instrument mappings")
                 
                 # Step 3: Calculate date ranges (previous month)
                 today = datetime.now()
@@ -118,29 +130,57 @@ class PremarketJob:
                             processed += 1
                             continue
                         
+                        # Get security ID for the symbol
+                        security_id = equity_mapping.get(symbol)
+                        if not security_id:
+                            logger.warning(f"No security ID found for {symbol}")
+                            failed.append({
+                                'symbol': symbol,
+                                'error': 'No security ID mapping found'
+                            })
+                            continue
+
                         # Fetch historical data for previous month
-                        logger.info(f"Fetching historical data for {symbol}...")
-                        
-                        historical_data = await fetcher.get_historical_data_for_underlying(
-                            symbol, 
-                            first_day_previous, 
-                            last_day_previous
+                        logger.info(f"Fetching historical data for {symbol} (security_id={security_id})...")
+
+                        # Calculate number of days to fetch (previous month + buffer)
+                        days_to_fetch = (today - first_day_previous).days + 5  # Add 5 days buffer
+
+                        historical_df = await fetcher.get_historical_data_for_underlying(
+                            symbol,
+                            int(security_id),  # Ensure it's an integer
+                            days=days_to_fetch
                         )
-                        
-                        if not historical_data or len(historical_data) == 0:
+
+                        if historical_df is None or historical_df.empty:
                             logger.warning(f"No historical data for {symbol}")
                             failed.append({
                                 'symbol': symbol,
                                 'error': 'No historical data available'
                             })
                             continue
-                        
-                        # Calculate monthly OHLC from historical data
+
+                        # Filter data for the previous month only
+                        historical_df['date'] = pd.to_datetime(historical_df['date'])
+                        month_data = historical_df[
+                            (historical_df['date'] >= first_day_previous) &
+                            (historical_df['date'] <= last_day_previous)
+                        ]
+
+                        if month_data.empty:
+                            logger.warning(f"No data for previous month for {symbol}")
+                            failed.append({
+                                'symbol': symbol,
+                                'error': f'No data for {first_day_previous.strftime("%Y-%m")}'
+                            })
+                            continue
+
+                        # Calculate monthly OHLC from filtered data
                         monthly_ohlc = {
-                            'high': max([d['high'] for d in historical_data]),
-                            'low': min([d['low'] for d in historical_data]),
-                            'close': historical_data[-1]['close'],  # Last day's close
-                            'open': historical_data[0]['open']      # First day's open
+                            'high': month_data['high'].max(),
+                            'low': month_data['low'].min(),
+                            'close': month_data.iloc[-1]['close'],  # Last day's close
+                            'open': month_data.iloc[0]['open']      # First day's open
                         }
                         
                         # Calculate and cache levels

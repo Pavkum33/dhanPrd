@@ -25,7 +25,15 @@
       "Bash(set PORT=5050)",
       "Bash(dir:*)",
       "Bash(findstr:*)",
-      "Bash(git ls-tree:*)"
+      "Bash(git ls-tree:*)",
+      "WebSearch",
+      "Read(//c/Users/user/Desktop/repo/TA-Lib/**)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(export DHAN_CLIENT_ID=1106283829)",
+      "Bash(export:*)",
+      "Bash(psql:*)",
+      "Bash(pip index:*)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

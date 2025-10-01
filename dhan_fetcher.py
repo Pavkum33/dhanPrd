@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Optional dhanhq SDK import
 try:
-    from dhanhq import dhanhq
+    from dhanhq import DhanContext, dhanhq
     HAS_DHAN_SDK = True
     logger.info("dhanhq SDK available")
 except ImportError:
@@ -42,8 +42,9 @@ class DhanHistoricalFetcher:
         # Initialize SDK if available
         if self.use_sdk:
             try:
-                # Use direct dhanhq initialization (as per working sample)
-                self.sdk = dhanhq(client_id, access_token)
+                # Create DhanContext first, then initialize SDK
+                ctx = DhanContext(client_id, access_token)
+                self.sdk = dhanhq(ctx)
                 logger.info("Initialized dhanhq SDK for historical data")
             except Exception as e:
                 logger.warning(f"Failed to initialize dhanhq SDK: {e}, falling back to REST API")
