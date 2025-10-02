@@ -2140,6 +2140,38 @@ def test_level_calculation():
         logger.error(f"Error in test calculation: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/websocket/status')
+def get_websocket_status():
+    """Get WebSocket connection status and live data"""
+    try:
+        from datetime import datetime
+        now = datetime.now()
+        hour = now.hour
+        minute = now.minute
+        market_open = (hour == 9 and minute >= 15) or (9 < hour < 15) or (hour == 15 and minute < 30)
+
+        status = {
+            'connected': False,
+            'market_open': market_open,
+            'market_hours': '9:15 AM - 3:30 PM IST',
+            'current_time': now.strftime('%Y-%m-%d %H:%M:%S'),
+            'message': 'WebSocket feed active during market hours' if market_open else 'Market closed'
+        }
+
+        # Check if WebSocket module exists
+        try:
+            from dhan_websocket_v2 import DhanWebSocketV2
+            status['websocket_module'] = 'Available'
+        except ImportError:
+            status['websocket_module'] = 'Not available'
+
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'status': 'Error checking WebSocket status'
+        }), 500
+
 @app.route('/api/websocket/live-market-test', methods=['POST'])
 def live_market_websocket_test():
     """
@@ -2435,12 +2467,66 @@ def init_app():
 # Initialize when module loads
 init_app()
 
+def start_websocket_feed():
+    """Start WebSocket feed in background thread"""
+    try:
+        from dhan_websocket_v2 import DhanWebSocketV2
+        import asyncio
+        import threading
+        from datetime import datetime
+
+        def run_websocket():
+            try:
+                logger.info("Starting WebSocket feed service...")
+
+                # Create new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                ws_client = DhanWebSocketV2()
+
+                # Run WebSocket in background during market hours
+                now = datetime.now()
+                hour = now.hour
+                minute = now.minute
+
+                # Only run during market hours or near market open
+                if (hour == 9 and minute >= 0) or (9 < hour < 16):
+                    # Subscribe to ALL F&O symbols from instruments file
+                    # Let the WebSocket client load all available symbols
+                    loop.run_until_complete(ws_client.connect_and_subscribe(subscribe_all=True))
+                    ws_client.show_results()
+                else:
+                    logger.info("WebSocket feed will start during market hours (9:15 AM - 3:30 PM)")
+
+            except Exception as e:
+                logger.error(f"WebSocket feed error: {e}")
+
+        # Start in background thread
+        websocket_thread = threading.Thread(target=run_websocket, daemon=True)
+        websocket_thread.start()
+        logger.info("WebSocket feed service started in background")
+
+    except ImportError:
+        logger.info("WebSocket module not found - creating it now...")
+        # If the module doesn't exist, WebSocket won't start but app will run
+
 if __name__ == '__main__':
     # Get port from environment
     port = int(os.getenv('PORT', 5000))
     host = '0.0.0.0'  # Railway requires binding to 0.0.0.0
-    
+
     print(f"Starting F&O Scanner Dashboard on {host}:{port}")
-    
+
+    # Start WebSocket feed service if credentials are available
+    if os.getenv('DHAN_CLIENT_ID') and os.getenv('DHAN_ACCESS_TOKEN'):
+        try:
+            start_websocket_feed()
+        except Exception as e:
+            logger.error(f"Could not start WebSocket feed: {e}")
+            print(f"WebSocket feed disabled: {e}")
+    else:
+        print("WebSocket feed disabled - no DHAN credentials found")
+
     # Use allow_unsafe_werkzeug for development/Railway
     socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
